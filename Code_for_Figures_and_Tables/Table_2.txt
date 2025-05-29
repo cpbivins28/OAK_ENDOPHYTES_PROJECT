@@ -1,0 +1,61 @@
+# Load packages
+library(vegan)
+library(permute)
+
+# File paths
+otu_path      <- "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path <- "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+output_path   <- "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Bray-Curtis/Stats/Nested_PERMANOVA_w_strata/permanova_results.csv"
+
+# Load data
+otu  <- read.csv(otu_path,      row.names = 1, check.names = FALSE)
+meta <- read.csv(metadata_path, check.names = FALSE)
+
+# Transpose OTU so rows = samples
+otu_t <- t(otu)
+
+# Align and filter to trees with all 3 months
+meta <- meta[ match(rownames(otu_t), meta$Sample_ID), ]
+stopifnot(nrow(meta) == nrow(otu_t),
+          identical(rownames(otu_t), meta$Sample_ID))
+
+# identify complete trees
+month.count <- table(meta$TreeID)
+complete.trees <- names(month.count)[ month.count == length(unique(meta$Month)) ]
+
+# subset metadata + OTU to those trees
+keep <- meta$TreeID %in% complete.trees
+meta_bal <- meta[keep, ]
+otu_t_bal <- otu_t[keep, ]
+
+stopifnot(nrow(meta_bal) == nrow(otu_t_bal),
+          identical(rownames(otu_t_bal), meta_bal$Sample_ID))
+message("Using ", length(complete.trees),
+        " trees (", nrow(meta_bal),
+        " samples) with all 3 months")
+
+# Make Month ordered
+meta_bal$Month <- factor(meta_bal$Month,
+                         levels = c("May","July","September"),
+                         ordered = TRUE)
+
+# Build two-tier perm control
+set.seed(42)
+ctrl <- how(
+  nperm  = 9999,
+  plots  = Plots(strata = meta_bal$TreeID, type = "free"),
+  within = Within(type = "free")
+)
+
+# Run hierarchical PERMANOVA
+permanova_hier <- adonis2(
+  otu_t_bal ~ Species * Site * Month,
+  data        = meta_bal,
+  permutations= ctrl,
+  method      = "bray",
+  by          = "terms"
+)
+
+# Save and print
+write.csv(as.data.frame(permanova_hier), output_path)
+print(permanova_hier)
