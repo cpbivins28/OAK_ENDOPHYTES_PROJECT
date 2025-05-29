@@ -1,0 +1,353 @@
+# Data Preparation
+### Import BIOM file
+```{r}
+endophytes_physeq <- import_biom("/Users/christopherbivins/Desktop/AMPTK_Outputs/Endophytes_Project/taxonomyITS.biom")
+# Extract OTU table as a data frame
+otu_df <- as.data.frame(otu_table(endophytes_physeq))
+```
+
+### Check if any samples have all zero sequence counts for all OTUs
+```{r}
+# Extract the OTU table from endophytes_physeq
+otu_table_endophytes <- otu_table(endophytes_physeq)
+
+# Find samples with all zero counts
+zero_count_samples <- colnames(otu_table_endophytes)[colSums(otu_table_endophytes) == 0]
+
+# Print the results
+if (length(zero_count_samples) > 0) {
+  cat("Samples with all zero counts:\n")
+  print(zero_count_samples)
+} else {
+  cat("No samples with all zero counts found.\n")
+}
+```
+
+### Perform negative control filtering 
+
+```{r}
+# Identify the negative control samples
+neg_samples <- grep("NEG", colnames(otu_df), value = TRUE)
+# Compute the total count of each OTU across the negative control samples
+neg_counts <- rowSums(otu_df[neg_samples])
+# Iterate over each OTU found in the negative controls
+for (otu in names(neg_counts)) {
+  # Check if the OTU is in the sample data
+  if (otu %in% rownames(otu_df)) {
+    # Subtract the negative control counts from the sample counts, ensuring no negative values
+    otu_df[otu,] <- pmax(otu_df[otu,] - neg_counts[otu], 0)
+  }
+}
+# Convert the adjusted DataFrame back to a phyloseq OTU table
+otu_table_adj <- otu_table(otu_df, taxa_are_rows = TRUE)
+# Create the new adjusted phyloseq object without phylogenetic tree
+physeq_adj <- phyloseq(otu_table_adj, sample_data(endophytes_physeq), tax_table(endophytes_physeq))
+# Change the name of physeq_adj to amptk_filtered_nc for downstream analysis
+endophytes_amptk_filtered_nc <- physeq_adj
+# Remove Negative Control Samples
+# Define a vector of sample names to be removed
+samples_to_remove <- c("NEG-CONTROL-N-S241-L001", "NEG-CONTROL-R-S242-L001", 
+                       "BLANK-R-S243-L001", "WASH-JULY-S224-L001", "WASH-MAY-S223-L001", 
+                       "WASH-SEP-S225-L001", "LYOPH-JULY-S221-L001", "LYOPH-MAY-S220-L001", 
+                       "LYOPH-SEP-S222-L001")
+# Reinitialize phyloseq object without negative control samples
+endophytes_amptk_filtered_nc <- subset_samples(endophytes_amptk_filtered_nc, !sample_names(endophytes_amptk_filtered_nc) %in% samples_to_remove)
+# Verify that the negative control filtering worked:
+# Extract count for a specific OTU in a specific sample from the original physeq
+otu_count_physeq <- otu_table(endophytes_physeq)["OTU5", "BOR-1-MAY-S25-L001"]
+print(paste("Count in original physeq: ", otu_count_physeq))
+# Extract count for the same OTU in the same sample from the adjusted physeq
+otu_count_physeq_adj <- otu_table(endophytes_amptk_filtered_nc)["OTU5", "BOR-1-MAY-S25-L001"]
+print(paste("Count in adjusted physeq: ", otu_count_physeq_adj))
+# Convert the filtered Sample table to a data.frame
+endophytes_filtered_sample_df <- as.data.frame(sample_data(endophytes_amptk_filtered_nc))
+
+```
+
+### Check if any samples have all zero sequence counts for all OTUs after negative control filtering
+```{r}
+# Step 1: Extract the OTU table from the phyloseq object and convert it to a matrix
+otu_matrix <- as(otu_table(endophytes_amptk_filtered_nc), "matrix")
+
+# Step 2: Calculate the sum of OTU abundances for each sample
+sample_sums <- colSums(otu_matrix)
+
+# Step 3: Identify samples with zero sequence counts (where the sum is zero)
+samples_with_zero_counts <- colnames(otu_matrix)[sample_sums == 0]
+
+# Step 4: Print the samples with zero counts
+print("Samples with zero sequence count abundances for all OTUs:")
+print(samples_with_zero_counts)
+```
+
+Four Blue Oak Ridge July samples have zero sequence count abundance after negative control filtering. One Blue Oak Valley September sample has zero sequence count abundance after negative control filtering. 
+
+### Assign Functional/Ecological Guild Traits
+
+```{r}
+## Within the biom_data file, the "tax_table" that contains all the taxonomic information is incorrectly formated. The column names for different taxonomic levels are "Rank1", "Rank2", "Rank3", etc., when they really should be "kingdom", "phylum", "class", etc... I need to rename these columns appropriately so that the guild assignment step recognizes the required taxonomic headers. 
+rank_names(endophytes_amptk_filtered_nc)
+colnames(tax_table(endophytes_amptk_filtered_nc)) = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")
+rank_names(endophytes_amptk_filtered_nc)
+# Clean up the names in the taxonomy table - get rid of all that junk!
+tax_table(endophytes_amptk_filtered_nc)
+tax_table(endophytes_amptk_filtered_nc)[, colnames(tax_table(endophytes_amptk_filtered_nc))] <- gsub(tax_table(endophytes_amptk_filtered_nc)[, colnames(tax_table(endophytes_amptk_filtered_nc))], pattern = "[a-z]__", replacement = "")
+tax_table(endophytes_amptk_filtered_nc)
+# Guild assignment function 
+assign_guild <- function(object, database) { 
+  ### This function assigns trophic modes (and other traits) to OTUs based on taxonomy
+  # returning a table with taxonomy and guild/traits for each OTU 
+  ### Arguments:
+  # object: a phyloseq object, for example imported from a .biom file
+  # database: Reference used, for example FungalTraits (Polme et al. 2020, Fungal Diversity 105, 1-16).
+  ### Function:
+  # load required packages 
+  require(file2meco)
+  require(microeco)
+  # convert phyloseq object into a "microtable"
+  meco <- phyloseq2meco(object)
+  # verify that OTUs and samples information is consistent across files
+  meco$tidy_dataset()
+  # assign guilds
+  t1 <- trans_func$new(dataset = meco)
+  t1$for_what <- "fungi"
+  t1$cal_spe_func(fungi_database = database)
+  # create a dataframe with taxonomy and guild/traits information
+  as.data.frame(t1$res_spe_func_raw_FungalTraits)
+}
+# Assign guilds to OTUs
+# I'm getting an error message saying "Error in if (any(apply(otu_table, 1, sum) == 0)) { :
+# I need to first investigate what values have either NA or NaN before I remove them (or change them to zeros), as will likely need to be done in order to assign guilds 
+# Check for NA values in the OTU table
+any(is.na(otu_table(endophytes_amptk_filtered_nc)))
+# Convert the OTU table to a matrix
+otu_matrix <- as.matrix(otu_table(endophytes_amptk_filtered_nc))
+# Find the indices of NA values
+na_indices <- which(is.na(otu_matrix), arr.ind = TRUE)
+# Print the indices
+print(na_indices)
+# Ah, the Negative control samples (NEG1-4) have all been changed to NaN - we just need to convert these to zeroes
+# Get the OTU table
+otu_table <- otu_table(endophytes_amptk_filtered_nc)
+# Replace NaN values with 0
+otu_table[is.nan(otu_table)] <- 0
+# Assign the modified otu_table back to the phyloseq object
+otu_table(endophytes_amptk_filtered_nc) <- otu_table
+# Assign guilds to the entire dataset
+guild_table = assign_guild(object = endophytes_amptk_filtered_nc, database = "FungalTraits")
+
+```
+
+### Fix the sample names that were accidentally named "LOVE" intead of "LOV"
+```{r}
+# Extract the current sample names
+sample_names_list <- sample_names(endophytes_amptk_filtered_nc)
+
+# Modify the specific sample names by replacing "LOVE" with "LOV"
+sample_names_list <- gsub("LOVE", "LOV", sample_names_list)
+
+# Assign the updated sample names back to the phyloseq object
+sample_names(endophytes_amptk_filtered_nc) <- sample_names_list
+
+# Print the updated sample names to confirm
+print(sample_names(endophytes_amptk_filtered_nc))
+
+```
+
+
+### Subset out samples from Oak Endophytes project
+```{r}
+# Extract sample names from the phyloseq object
+sample_names_list <- sample_names(endophytes_amptk_filtered_nc)
+
+# Identify sample names containing "LOV", "LOR", "BOV", or "BOR"
+selected_samples <- sample_names_list[grepl("LOV|LOR|BOV|BOR", sample_names_list)]
+
+# Subset the phyloseq object to only include the selected samples
+oak_endophytes_physeq <- prune_samples(selected_samples, endophytes_amptk_filtered_nc)
+
+# Verify that the new phyloseq object contains the correct samples
+print(sample_names(oak_endophytes_physeq))
+
+```
+
+### Remove the samples with "-R-" in their name 
+
+```{r}
+# Function to remove samples with "-R-" in their name
+remove_r_samples <- function(physeq) {
+  samples_to_keep <- sample_names(physeq)[!grepl("-R-", sample_names(physeq))]
+  physeq_filtered <- prune_samples(samples_to_keep, physeq)
+  return(physeq_filtered)
+}
+# Apply the function to oak_endophytes_physeq
+oak_endophytes_physeq_filtered <- remove_r_samples(oak_endophytes_physeq)
+# Verify the results by printing the sample names
+print(sample_names(oak_endophytes_physeq_filtered))
+```
+
+### Export list of filtered sample names as CSV file to create metadata file
+```{r}
+# Extract sample names from the phyloseq object
+sample_names_list <- sample_names(oak_endophytes_physeq_filtered)
+
+# Convert the sample names to a data frame
+sample_names_df <- data.frame(Sample_Names = sample_names_list)
+
+# Specify the directory and file name
+output_file <- "/Users/christopherbivins/Desktop/csv_files_for_oak_endophytes_project/sample_names_oak_endophytes.csv"
+
+# Write the data frame to a CSV file
+write.csv(sample_names_df, file = output_file, row.names = FALSE)
+
+# Confirm that the file has been written
+cat("CSV file has been exported to:", output_file)
+
+```
+
+### Add sample metadata and create a new phyloseq object
+```{r}
+metadata <- read.csv("/Users/christopherbivins/Desktop/Oak_Endophyte_Project/Relative_Abundance/oak_endophytes_metadata.csv", row.names = 1)
+sample_data_df <- sample_data(metadata)
+
+# Remove the existing Treatment column from the phyloseq object, if it exists
+existing_data <- sample_data(oak_endophytes_physeq_filtered)
+existing_data$Treatment <- NULL
+sample_data(oak_endophytes_physeq_filtered) <- existing_data
+
+# Now merge with the new metadata
+oak_endophytes_physeq_updated <- merge_phyloseq(oak_endophytes_physeq_filtered, sample_data(metadata))
+```
+
+### Identify which samples, if any, have zero sequence count abundance values for all OTUs in oak_endophytes_physeq_updated
+```{r}
+# Step 1: Extract the OTU table from the phyloseq object and convert it to a matrix
+otu_matrix <- as(otu_table(oak_endophytes_physeq_updated), "matrix")
+
+# Step 2: Calculate the sum of OTU abundances for each sample
+sample_sums <- colSums(otu_matrix)
+
+# Step 3: Identify samples with zero sequence counts (where the sum is zero)
+samples_with_zero_counts <- colnames(otu_matrix)[sample_sums == 0]
+
+# Step 4: Print the samples with zero counts
+print("Samples with zero sequence count abundances for all OTUs:")
+print(samples_with_zero_counts)
+
+```
+
+### Remove these samples from the phyloseq object
+```{r}
+
+# Define the samples to be removed
+samples_to_remove <- c("BOR-2-JULY-S74-L001", "BOR-6-JULY-S78-L001", "BOR-7-JULY-S79-L001", 
+                       "BOR-9-JULY-S81-L001", "BOV-10-SEP-S106-L001", "O1-G-5-S164-L001")
+
+# Remove the samples from the phyloseq object
+oak_endophytes_physeq_updated <- prune_samples(!(sample_names(oak_endophytes_physeq_updated) %in% samples_to_remove), 
+                                                oak_endophytes_physeq_updated)
+
+# Check the resulting phyloseq object to confirm the samples are removed
+print(sample_names(oak_endophytes_physeq_updated))
+
+```
+
+### Export Raw OTU table as CSV:
+```{r}
+# Load necessary library
+library(phyloseq)
+
+# Set file path for saving the raw abundance OTU table
+output_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project/Raw_abundance_counts/raw_otu_table.csv"
+
+# Extract OTU table from the phyloseq object
+otu_table_raw <- as.data.frame(otu_table(oak_endophytes_physeq_updated))
+
+# Save the raw OTU table as a CSV file
+write.csv(otu_table_raw, output_path, row.names = TRUE)
+
+# Print a message confirming the save
+cat("Raw OTU table saved to:", output_path, "\n")
+
+
+```
+
+
+
+### Create Presence/Absence and Relative Abundance phyloseq objects
+```{r}
+# Create the presence/absence function
+# Presence/absence phyloseq object
+# Function to convert OTU counts to presence/absence
+make_presence_absence <- function(physeq_obj) {
+  otu_table_binary <- otu_table(physeq_obj)
+  
+  # Convert OTU counts to binary presence/absence (1 if present, 0 if absent)
+  otu_table_binary[otu_table_binary > 0] <- 1
+  
+  # Create a new phyloseq object with the transformed binary OTU table
+  physeq_pa <- phyloseq(otu_table(otu_table_binary, taxa_are_rows = TRUE), 
+                        sample_data(physeq_obj), 
+                        tax_table(physeq_obj))
+  
+  return(physeq_pa)
+}
+
+# Create the presence/absence phyloseq object
+PA_oaks_project_physeq <- make_presence_absence(oak_endophytes_physeq_updated)
+
+# Create relative abundance phyloseq object
+# Transform the OTU table to relative abundances
+RA_oaks_project_physeq <- transform_sample_counts(oak_endophytes_physeq_updated, function(x) x / sum(x))
+```
+
+###  Export OTU Table from PA_oaks_project_physeq as a CSV
+```{r}
+# Extract OTU table from PA_oaks_project_physeq
+PA_otu_table <- as(otu_table(PA_oaks_project_physeq), "matrix")
+
+# Convert to a dataframe
+PA_otu_df <- as.data.frame(PA_otu_table)
+
+# Specify the directory and file name for Presence/Absence OTU table
+PA_output_file <- "/Users/christopherbivins/Desktop/csv_files_for_oak_endophytes_project/Presence_Absence/PA_otu_table.csv"
+
+# Write the dataframe to a CSV file
+write.csv(PA_otu_df, file = PA_output_file, row.names = TRUE)
+
+# Confirm the file has been written
+cat("Presence/Absence OTU table has been exported to:", PA_output_file)
+
+```
+
+### Export OTU Table from RA_oaks_project_physeq as a CSV
+```{r}
+# Extract OTU table from RA_oaks_project_physeq
+RA_otu_table <- as(otu_table(RA_oaks_project_physeq), "matrix")
+
+# Convert to a dataframe
+RA_otu_df <- as.data.frame(RA_otu_table)
+
+# Specify the directory and file name for Relative Abundance OTU table
+RA_output_file <- "/Users/christopherbivins/Desktop/csv_files_for_oak_endophytes_project/Relative_Abundance/RA_otu_table.csv"
+
+# Write the dataframe to a CSV file
+write.csv(RA_otu_df, file = RA_output_file, row.names = TRUE)
+
+# Confirm the file has been written
+cat("Relative Abundance OTU table has been exported to:", RA_output_file)
+
+```
+
+### Export guild_table dataframe as a CSV
+```{r}
+# Specify the directory and file name for guild_table
+guild_output_file <- "/Users/christopherbivins/Desktop/csv_files_for_oak_endophytes_project/guild_table.csv"
+
+# Write the guild_table dataframe to a CSV file
+write.csv(guild_table, file = guild_output_file, row.names = TRUE)
+
+# Confirm the file has been written
+cat("Guild table has been exported to:", guild_output_file)
+
+```
