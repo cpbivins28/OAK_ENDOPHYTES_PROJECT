@@ -1,0 +1,403 @@
+library(betapart)
+library(readr)
+library(dplyr)
+
+# File paths
+otu_table_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+output_dir <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Turnover_Nestedness"
+
+# Load data
+otu_table <- read_csv(otu_table_path, col_names = TRUE)
+metadata <- read_csv(metadata_path, col_names = TRUE)
+
+# Ensure OTU table and metadata align
+metadata <- metadata %>% filter(Sample_ID %in% colnames(otu_table))
+otu_table <- otu_table %>% select(any_of(metadata$Sample_ID))
+
+# -----------------------------------------------------------------------------
+# Function to calculate pairwise beta diversity and summarize metrics
+# -----------------------------------------------------------------------------
+calculate_pairwise_beta <- function(subset_otu_table) {
+  # If we have fewer than 2 samples, can't do pairwise comparisons
+  if (ncol(subset_otu_table) < 2) {
+    return(data.frame(Sample1 = NA, Sample2 = NA, Turnover = NA, Nestedness = NA))
+  }
+  
+  # 1) Transpose so rows = samples, columns = OTUs
+  #    Because your original 'subset_otu_table' has rows = OTUs, columns = sample IDs
+  transposed_matrix <- t(as.matrix(subset_otu_table))
+  
+  # 2) Convert to presence-absence
+  binary_matrix <- (transposed_matrix > 0) * 1
+  
+  # 3) Assign row names to be the sample IDs
+  rownames(binary_matrix) <- colnames(subset_otu_table)
+  
+  # 4) Calculate beta diversity
+  beta_result <- beta.pair(binary_matrix, index.family = "sorensen")
+  
+  # Extract Turnover and Nestedness
+  beta_turnover <- as.data.frame(as.table(as.matrix(beta_result$beta.sim)))
+  colnames(beta_turnover) <- c("Sample1", "Sample2", "Turnover")
+  
+  beta_nestedness <- as.data.frame(as.table(as.matrix(beta_result$beta.sne)))
+  colnames(beta_nestedness) <- c("Sample1", "Sample2", "Nestedness")
+  
+  # Merge Turnover and Nestedness into one table
+  pairwise_beta <- merge(beta_turnover, beta_nestedness, by = c("Sample1", "Sample2"))
+  
+  return(pairwise_beta)
+}
+
+# -----------------------------------------------------------------------------
+# Within-group variability
+# -----------------------------------------------------------------------------
+within_group_results <- list()
+unique_groups <- metadata %>% distinct(Species, Site, Month)
+
+for (i in 1:nrow(unique_groups)) {
+  group <- unique_groups[i, ]
+  group_metadata <- metadata %>% filter(Species == group$Species, 
+                                        Site == group$Site, 
+                                        Month == group$Month)
+  sample_ids <- group_metadata$Sample_ID
+  
+  if (length(sample_ids) > 1) {
+    message("Processing within-group: ", paste(group, collapse = " - "), 
+            " with ", length(sample_ids), " samples")
+    
+    subset_otu <- otu_table %>% select(any_of(sample_ids))
+    
+    # Calculate pairwise beta diversity
+    pairwise_beta <- calculate_pairwise_beta(subset_otu)
+    
+    # Summarize metrics
+    summary_stats <- pairwise_beta %>%
+      summarise(
+        Mean_Turnover = mean(Turnover, na.rm = TRUE),
+        SD_Turnover = sd(Turnover, na.rm = TRUE),
+        Mean_Nestedness = mean(Nestedness, na.rm = TRUE),
+        SD_Nestedness = sd(Nestedness, na.rm = TRUE)
+      )
+    summary_stats <- cbind(group, summary_stats)
+    within_group_results[[paste(group, collapse = "_")]] <- summary_stats
+  } else {
+    message("Skipping within-group: ", paste(group, collapse = " - "), 
+            " due to insufficient samples")
+  }
+}
+
+# Combine summaries for all within-group comparisons
+final_within_summaries <- bind_rows(within_group_results)
+
+# Save within-group results
+within_output_path <- file.path(output_dir, "within_group_beta_diversity_summaries.csv")
+write_csv(final_within_summaries, within_output_path)
+message("Within-group beta diversity summaries have been saved to '", within_output_path, "'.")
+
+# -----------------------------------------------------------------------------
+# Between-group variability (only cross-month)
+# -----------------------------------------------------------------------------
+between_group_results <- list()
+
+# Only do May→July and July→September
+month_pairs <- list(c("May", "July"), c("July", "September"))
+
+for (species in unique(metadata$Species)) {
+  for (site in unique(metadata$Site)) {
+    for (months in month_pairs) {
+      group1_metadata <- metadata %>% filter(Species == species, 
+                                             Site == site, 
+                                             Month == months[1])
+      group2_metadata <- metadata %>% filter(Species == species, 
+                                             Site == site, 
+                                             Month == months[2])
+      
+      # We need at least one sample in each month to do a cross-group comparison
+      if (nrow(group1_metadata) > 0 & nrow(group2_metadata) > 0) {
+        
+        # Combine the sample IDs from both months
+        combined_samples <- c(group1_metadata$Sample_ID, group2_metadata$Sample_ID)
+        
+        # Subset the OTU table
+        subset_otu <- otu_table %>% select(any_of(combined_samples))
+        
+        message("Processing between-group: ", species, 
+                " - ", site, 
+                " from ", months[1], " to ", months[2],
+                " (", length(combined_samples), " total samples )")
+        
+        # Calculate pairwise beta for the combined set
+        pairwise_beta <- calculate_pairwise_beta(subset_otu)
+        
+        # Filter only cross-month pairs:
+        pairwise_beta <- pairwise_beta %>%
+          filter( (Sample1 %in% group1_metadata$Sample_ID & 
+                   Sample2 %in% group2_metadata$Sample_ID) |
+                  (Sample1 %in% group2_metadata$Sample_ID & 
+                   Sample2 %in% group1_metadata$Sample_ID)
+                )
+        
+        # Summarize metrics for these cross-month pairs
+        summary_stats <- pairwise_beta %>%
+          summarise(
+            Mean_Turnover = mean(Turnover, na.rm = TRUE),
+            SD_Turnover = sd(Turnover, na.rm = TRUE),
+            Mean_Nestedness = mean(Nestedness, na.rm = TRUE),
+            SD_Nestedness = sd(Nestedness, na.rm = TRUE)
+          )
+        
+        summary_stats <- data.frame(Species = species, 
+                                    Site = site, 
+                                    Month1 = months[1], 
+                                    Month2 = months[2], 
+                                    summary_stats)
+        
+        between_group_results[[paste(species, site, months[1], months[2], sep = "_")]] <- summary_stats
+      } else {
+        message("Skipping between-group: ", species, " - ", site, 
+                " from ", months[1], " to ", months[2], 
+                " due to insufficient samples (",
+                nrow(group1_metadata), " in Month1, ",
+                nrow(group2_metadata), " in Month2 )")
+      }
+    }
+  }
+}
+
+# Combine summaries for all between-group comparisons
+final_between_summaries <- bind_rows(between_group_results)
+
+# Save between-group results
+between_output_path <- file.path(output_dir, "between_group_beta_diversity_summaries.csv")
+write_csv(final_between_summaries, between_output_path)
+message("Between-group beta diversity summaries have been saved to '", between_output_path, "'.")
+
+
+
+# Load necessary libraries
+library(vegan)
+
+# File paths
+otu_table_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project/Relative_Abundance/RA_otu_table.csv"
+metadata_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project/Relative_Abundance/metadata.csv"
+output_dir <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project/scripts/Beta_Diversity/within_and_between_tree_variation"
+
+# Load data
+otu_table <- read.csv(otu_table_path, row.names = 1)
+metadata <- read.csv(metadata_path)
+
+# Align metadata with OTU table
+metadata$Sample_ID <- gsub("-", ".", metadata$Sample_ID)
+metadata <- metadata[metadata$Sample_ID %in% colnames(otu_table), ]
+
+# Transpose OTU table for Bray-Curtis calculation
+otu_table_transposed <- t(otu_table)
+
+# Compute Bray-Curtis distance matrix
+bray_curtis <- vegdist(otu_table_transposed, method = "bray")
+
+# Extract pairwise distances
+dist_matrix <- as.matrix(bray_curtis)
+
+# Map TreeID to sample names
+metadata_map <- metadata$TreeID
+names(metadata_map) <- metadata$Sample_ID
+
+# Partition distances into within-tree and between-tree
+within_tree <- vector()
+between_tree <- vector()
+within_tree_data <- data.frame()
+between_tree_data <- data.frame()
+
+for (i in 1:(ncol(dist_matrix) - 1)) {
+  for (j in (i + 1):ncol(dist_matrix)) {
+    if (metadata_map[colnames(dist_matrix)[i]] == metadata_map[colnames(dist_matrix)[j]]) {
+      within_tree <- c(within_tree, dist_matrix[i, j])
+      within_tree_data <- rbind(within_tree_data, data.frame(TreeID = metadata_map[colnames(dist_matrix)[i]], Distance = dist_matrix[i, j]))
+    } else {
+      between_tree <- c(between_tree, dist_matrix[i, j])
+      between_tree_data <- rbind(between_tree_data, data.frame(Tree1 = metadata_map[colnames(dist_matrix)[i]], Tree2 = metadata_map[colnames(dist_matrix)[j]], Distance = dist_matrix[i, j]))
+    }
+  }
+}
+
+# Export within-tree and between-tree data
+write.csv(within_tree_data, file.path(output_dir, "within_tree_distances.csv"), row.names = FALSE)
+write.csv(between_tree_data, file.path(output_dir, "between_tree_distances.csv"), row.names = FALSE)
+
+# Visualize within-tree vs. between-tree beta diversity
+boxplot(list(Within_Tree = within_tree, Between_Tree = between_tree),
+        main = "Beta Diversity Within vs. Between Trees",
+        ylab = "Bray-Curtis Distance",
+        col = c("skyblue", "orange"))
+
+# Statistical test for difference (Wilcoxon rank-sum test)
+wilcox_test <- wilcox.test(within_tree, between_tree)
+
+# Print statistical test result
+cat("Wilcoxon rank-sum test result:\n")
+print(wilcox_test)
+
+# Summary statistics
+within_tree_mean <- mean(within_tree)
+between_tree_mean <- mean(between_tree)
+
+cat("\nMean Bray-Curtis Distance:\n")
+cat("Within-Tree:", within_tree_mean, "\n")
+cat("Between-Tree:", between_tree_mean, "\n")
+
+# PERMANOVA analysis
+# Add TreeID to metadata for PERMANOVA
+group <- metadata$TreeID
+
+# Run PERMANOVA
+adonis_result <- adonis2(bray_curtis ~ group, data = metadata, permutations = 999)
+
+# Print PERMANOVA results
+cat("\nPERMANOVA results:\n")
+print(adonis_result)
+
+# Check homogeneity of multivariate dispersions
+betadisper_result <- betadisper(bray_curtis, group)
+permutest_result <- permutest(betadisper_result, permutations = 999)
+
+cat("\nHomogeneity of multivariate dispersion test:\n")
+print(permutest_result)
+
+# Visualize multivariate dispersion
+boxplot(betadisper_result, main = "Multivariate Dispersion by TreeID", 
+        xlab = "TreeID", ylab = "Distance to Centroid", col = "lightblue")
+
+
+
+
+### PLOTS
+
+#### Supplemental Figures 1 & 2 
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# File paths
+within_group_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Turnover_Nestedness/within_group_beta_diversity_summaries.csv"
+between_group_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Turnover_Nestedness/between_group_beta_diversity_summaries.csv"
+
+# Load data
+within_group_df = pd.read_csv(within_group_path)
+between_group_df = pd.read_csv(between_group_path)
+
+# Filter out May → September comparisons
+between_group_df = between_group_df[(between_group_df["Month1"] == "May") & (between_group_df["Month2"] == "July") |
+                                    (between_group_df["Month1"] == "July") & (between_group_df["Month2"] == "September")]
+
+# Define species-site categories
+categories = [
+    ("Q_douglasii", "Ridge"),
+    ("Q_douglasii", "Valley"),
+    ("Q_wislizeni", "Ridge"),
+    ("Q_wislizeni", "Valley")
+]
+
+# Define correct month order
+month_order = ["May", "July", "September"]
+
+sns.set_style("white")
+
+# Plot within-group trends separately
+for species, site in categories:
+    subset = within_group_df[(within_group_df["Species"] == species) & (within_group_df["Site"] == site)]
+    subset["Month"] = pd.Categorical(subset["Month"], categories=month_order, ordered=True)
+    subset = subset.sort_values("Month")
+    
+    plt.figure(figsize=(8, 6))
+    plt.plot(subset["Month"], subset["Mean_Turnover"], marker='o', label="Turnover", color='black')
+    plt.plot(subset["Month"], subset["Mean_Nestedness"], marker='s', label="Nestedness", color='black', linestyle='dashed')
+    plt.title(f"Within Group: {species} - {site}")
+    plt.xlabel("Month")
+    plt.ylabel("Beta Diversity Component")
+    plt.legend()
+    plt.xticks(rotation=45)
+    plt.grid(False)
+    plt.gca().spines["top"].set_visible(False)
+    plt.gca().spines["right"].set_visible(False)
+    plt.tight_layout()
+    plt.savefig(f"within_group_{species}_{site}.svg")
+    plt.show()
+
+# Plot between-group trends separately
+for species, site in categories:
+    subset = between_group_df[(between_group_df["Species"] == species) & (between_group_df["Site"] == site)]
+    plt.figure(figsize=(8, 6))
+    plt.plot(subset["Month1"] + " to " + subset["Month2"], subset["Mean_Turnover"], marker='o', label="Turnover", color='black')
+    plt.plot(subset["Month1"] + " to " + subset["Month2"], subset["Mean_Nestedness"], marker='s', label="Nestedness", color='black', linestyle='dashed')
+    plt.title(f"Between Group: {species} - {site}")
+    plt.xlabel("Month Transition")
+    plt.ylabel("Beta Diversity Component")
+    plt.legend()
+    plt.xticks(rotation=45)
+    plt.grid(False)
+    plt.gca().spines["top"].set_visible(False)
+    plt.gca().spines["right"].set_visible(False)
+    plt.tight_layout()
+    plt.savefig(f"between_group_{species}_{site}.svg")
+    plt.show()
+
+
+#### Supplemental Figures 3 & 4
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+
+# File paths
+within_tree_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project/scripts/Beta_Diversity/within_and_between_tree_variation/within_tree_distances.csv"
+between_tree_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project/scripts/Beta_Diversity/within_and_between_tree_variation/between_tree_distances.csv"
+output_dir = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project/scripts/Beta_Diversity/within_and_between_tree_variation"
+
+# Load data
+within_tree_data = pd.read_csv(within_tree_path)
+between_tree_data = pd.read_csv(between_tree_path)
+
+# Create output directory if it doesn't exist
+os.makedirs(output_dir, exist_ok=True)
+
+# Visualization 1: Boxplot for Within-Tree vs. Between-Tree Beta Diversity
+plt.figure(figsize=(8, 6))
+data_to_plot = [within_tree_data['Distance'], between_tree_data['Distance']]
+plt.boxplot(data_to_plot, labels=['Within Tree', 'Between Trees'], patch_artist=True, 
+            boxprops=dict(facecolor='skyblue'), medianprops=dict(color='red'))
+plt.title('Beta Diversity: Within vs. Between Trees')
+plt.ylabel('Bray-Curtis Distance')
+plt.gca().set_xticks([1, 2])
+plt.savefig(os.path.join(output_dir, 'within_vs_between_trees.svg'), format='svg')
+plt.show()
+
+# Visualization 2: Beta Diversity Within Each Tree (Boxplot)
+plt.figure(figsize=(12, 8))
+within_tree_data.boxplot(by='TreeID', column='Distance', grid=False, figsize=(12, 8), color='blue')
+plt.title('Beta Diversity Within Each Tree')
+plt.suptitle('')  # Remove default subtitle
+plt.xlabel('TreeID')
+plt.ylabel('Bray-Curtis Distance')
+plt.xticks(rotation=90)
+plt.savefig(os.path.join(output_dir, 'beta_diversity_within_each_tree.svg'), format='svg')
+plt.show()
+
+# Visualization 3: Beta Diversity Between Trees (Scatterplot)
+plt.figure(figsize=(12, 8))
+plt.scatter(between_tree_data['Tree1'], between_tree_data['Distance'], alpha=0.6, color='orange', label='Tree1 vs. Tree2 Distances')
+plt.xticks(rotation=90)
+plt.title('Beta Diversity Between Trees')
+plt.xlabel('TreeID (Tree1)')
+plt.ylabel('Bray-Curtis Distance')
+plt.legend(loc='upper right')
+plt.savefig(os.path.join(output_dir, 'beta_diversity_between_trees.svg'), format='svg')
+plt.show()
+
+print("Visualizations saved in:", output_dir)
+
+

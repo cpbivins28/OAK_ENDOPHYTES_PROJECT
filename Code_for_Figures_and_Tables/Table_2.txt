@@ -1,0 +1,92 @@
+#### PERMANOVA - INTERACTIONS
+
+# Load necessary libraries
+library(vegan)
+
+# File paths
+otu_table_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+
+# Load data
+otu_table <- read.csv(otu_table_path, row.names = 1)
+metadata <- read.csv(metadata_path)
+
+# Align metadata with OTU table
+metadata$Sample_ID <- gsub("-", ".", metadata$Sample_ID)
+metadata <- metadata[metadata$Sample_ID %in% colnames(otu_table), ]
+
+# Transpose OTU table for Bray-Curtis calculation
+otu_table_transposed <- t(otu_table)
+
+# Compute Bray-Curtis distance matrix
+bray_curtis <- vegdist(otu_table_transposed, method = "bray")
+
+# Define the PERMANOVA formula including interactions
+interaction_formula <- bray_curtis ~ Site * Species * Month
+
+# Run PERMANOVA including interactions
+interaction_permanova <- adonis2(interaction_formula, data = metadata, permutations = 999)
+
+# Print interaction PERMANOVA results
+print(interaction_permanova)
+
+# Save interaction PERMANOVA results to CSV
+interaction_results_df <- as.data.frame(interaction_permanova)
+write.csv(interaction_results_df, "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Bray-Curtis/Stats/interaction_permanova_results.csv")
+
+# Optional: Test specific interactions separately
+specific_interaction_formula <- bray_curtis ~ Site + Species + Month + Site:Species
+specific_interaction_permanova <- adonis2(specific_interaction_formula, data = metadata, permutations = 999)
+
+# Print specific interaction PERMANOVA results
+print(specific_interaction_permanova)
+
+# Save specific interaction PERMANOVA results to CSV
+specific_interaction_results_df <- as.data.frame(specific_interaction_permanova)
+write.csv(specific_interaction_results_df, "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Bray-Curtis/Stats/specific_interaction_permanova_results.csv")
+
+
+
+
+#### PERMANOVA - TreeID
+
+# Load necessary library
+library(vegan)
+
+# File paths (adjust these as needed)
+otu_table_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+output_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Bray-Curtis/Stats/TreeID_permanova_results.csv"
+
+# Load data
+otu_table <- read.csv(otu_table_path, row.names = 1)
+metadata <- read.csv(metadata_path)
+
+# Adjust Sample_ID formatting if needed (to match column names in otu_table)
+metadata$Sample_ID <- gsub("-", ".", metadata$Sample_ID)
+metadata <- metadata[metadata$Sample_ID %in% colnames(otu_table), ]
+
+# Transpose OTU table for Bray-Curtis calculation
+otu_table_transposed <- t(otu_table)
+
+# Compute Bray-Curtis distance matrix
+bray_curtis <- vegdist(otu_table_transposed, method = "bray")
+
+# Define the PERMANOVA formula with TreeID only
+formula <- as.formula("bray_curtis ~ TreeID")
+
+# Run PERMANOVA
+treeid_permanova <- adonis2(formula, data = metadata, permutations = 999)
+
+# Convert results to a data frame
+results_df <- as.data.frame(treeid_permanova)
+
+# Add a column that holds the row names (e.g., "TreeID", "Residual", "Total")
+results_df$Term <- rownames(results_df)
+
+# Reorder columns so 'Term' appears first
+results_df <- results_df[, c("Term", "Df", "SumOfSqs", "R2", "F", "Pr(>F)")]
+
+# Save results to CSV (row.names = FALSE to avoid duplicate labeling)
+write.csv(results_df, output_path, row.names = FALSE)
+cat("PERMANOVA (TreeID only) results exported to:", output_path, "\n")

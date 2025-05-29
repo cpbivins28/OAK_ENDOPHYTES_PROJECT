@@ -1,0 +1,238 @@
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Load data
+otu_table_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+
+# Read OTU table and metadata
+otu_table = pd.read_csv(otu_table_path, index_col=0)
+metadata = pd.read_csv(metadata_path)
+
+# Define alpha diversity metrics
+def richness(otu_counts):
+    return (otu_counts > 0).sum()
+
+def shannon_diversity(otu_counts):
+    proportions = otu_counts[otu_counts > 0] / otu_counts.sum()
+    return -np.sum(proportions * np.log(proportions))
+
+def simpson_index(otu_counts):
+    proportions = otu_counts / otu_counts.sum()
+    return 1 - np.sum(proportions ** 2)
+
+# Calculate metrics for each sample
+alpha_diversity = pd.DataFrame(index=otu_table.columns, columns=["Richness", "Shannon", "Simpson"])
+
+for sample in otu_table.columns:
+    otu_counts = otu_table[sample]
+    alpha_diversity.loc[sample, "Richness"] = richness(otu_counts)
+    alpha_diversity.loc[sample, "Shannon"] = shannon_diversity(otu_counts)
+    alpha_diversity.loc[sample, "Simpson"] = simpson_index(otu_counts)
+
+# Merge with metadata
+alpha_diversity = alpha_diversity.reset_index().rename(columns={"index": "Sample_ID"})
+merged_data = pd.merge(alpha_diversity, metadata, on="Sample_ID")
+
+# Define custom palettes for plots
+custom_palette = {
+    ("Blue Oak", "May"): "#95C8E1",
+    ("Blue Oak", "July"): "#90AAC4",
+    ("Blue Oak", "September"): "#5E7790",
+    ("Interior Live Oak", "May"): "#519D91",
+    ("Interior Live Oak", "July"): "#73BF99",
+    ("Interior Live Oak", "September"): "#95E1AE"
+}
+
+species_palette = {
+    "Blue Oak": "#88CCEE",
+    "Interior Live Oak": "#44AA99"
+}
+
+# Replace species names with common names
+species_mapping = {"Q_douglasii": "Blue Oak", "Q_wislizeni": "Interior Live Oak"}
+merged_data["Species"] = merged_data["Species"].map(species_mapping)
+
+# Metrics and groups
+metrics = ["Richness", "Shannon", "Simpson"]
+group_vars = ["Species", "Site"]
+
+# Generate dot plots for alpha diversity metrics grouped by Species
+for metric in metrics:
+    plt.figure(figsize=(8, 6))
+    sns.stripplot(
+        data=merged_data, x="Species", y=metric, palette=species_palette,
+        jitter=True, alpha=0.7
+    )
+    plt.title(f"{metric} by Species")
+    plt.xlabel("Species")
+    plt.ylabel(metric)
+    plt.grid(False)  # Disable gridlines
+    plt.savefig(f"dotplot_{metric}_Species.svg")
+    plt.show()
+
+# Generate dot plots for alpha diversity metrics grouped by species and month
+for metric in metrics:
+    plt.figure(figsize=(8, 6))
+    sns.stripplot(
+        data=merged_data, x="Species", y=metric, hue="Month",
+        palette=[custom_palette[(species, month)] for species, month in zip(merged_data["Species"], merged_data["Month"])],
+        jitter=True, alpha=0.7
+    )
+    plt.title(f"{metric} by Species and Month")
+    plt.xlabel("Species")
+    plt.ylabel(metric)
+    plt.grid(False)  # Disable gridlines
+    plt.legend(title="Month")
+    plt.savefig(f"dotplot_{metric}_Species_Month.svg")
+    plt.show()
+
+# Generate dot plots for alpha diversity metrics grouped by species, site, and visualized across months
+for metric in metrics:
+    for (species, site), data in merged_data.groupby(group_vars):
+        plt.figure(figsize=(8, 6))
+        sns.stripplot(
+            data=data, x="Month", y=metric, 
+            palette=[custom_palette[(species, month)] for month in data["Month"]],
+            jitter=True, alpha=0.7, order=["May", "July", "September"]
+        )
+        plt.title(f"{metric} Across Months - {species} at {site}")
+        plt.xlabel("Month")
+        plt.ylabel(metric)
+        plt.grid(False)  # Disable gridlines
+        species_site_label = f"{species.replace(' ', '_')}_{site}".lower()
+        plt.savefig(f"dotplot_{metric}_{species_site_label}_custom_gradient.svg")
+        plt.show()
+
+print("Alpha diversity dot plot visualization completed. Results saved as SVG files.")
+
+
+
+
+### KRUSKAL-WALLIS and DUNN'S TESTING
+
+import pandas as pd
+import numpy as np
+from scipy.stats import kruskal
+import scikit_posthocs as sp
+
+# Load data
+otu_table_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project/Relative_Abundance/RA_otu_table.csv"
+metadata_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project/Relative_Abundance/metadata.csv"
+
+# Read OTU table and metadata
+otu_table = pd.read_csv(otu_table_path, index_col=0)
+metadata = pd.read_csv(metadata_path)
+
+# Define alpha diversity metrics
+def richness(otu_counts):
+    return (otu_counts > 0).sum()
+
+def shannon_diversity(otu_counts):
+    proportions = otu_counts[otu_counts > 0] / otu_counts.sum()
+    return -np.sum(proportions * np.log(proportions))
+
+def simpson_index(otu_counts):
+    proportions = otu_counts / otu_counts.sum()
+    return 1 - np.sum(proportions ** 2)
+
+# Calculate metrics for each sample
+alpha_diversity = pd.DataFrame(index=otu_table.columns, columns=["Richness", "Shannon", "Simpson"])
+
+for sample in otu_table.columns:
+    otu_counts = otu_table[sample]
+    alpha_diversity.loc[sample, "Richness"] = richness(otu_counts)
+    alpha_diversity.loc[sample, "Shannon"] = shannon_diversity(otu_counts)
+    alpha_diversity.loc[sample, "Simpson"] = simpson_index(otu_counts)
+
+# Merge with metadata
+alpha_diversity = alpha_diversity.reset_index().rename(columns={"index": "Sample_ID"})
+merged_data = pd.merge(alpha_diversity, metadata, on="Sample_ID")
+
+# Define comparisons and perform tests on Shannon diversity only
+comparisons = [
+    # Month comparisons for Q_wislizeni
+    ("Month", {"Species": "Q_wislizeni", "Site": "Ridge"}),
+    ("Month", {"Species": "Q_wislizeni", "Site": "Valley"}),
+    
+    # Month comparisons for Q_douglasii
+    ("Month", {"Species": "Q_douglasii", "Site": "Ridge"}),
+    ("Month", {"Species": "Q_douglasii", "Site": "Valley"}),
+    
+    # Site comparisons for Q_wislizeni by month
+    ("Site", {"Species": "Q_wislizeni", "Month": "May"}),
+    ("Site", {"Species": "Q_wislizeni", "Month": "July"}),
+    ("Site", {"Species": "Q_wislizeni", "Month": "September"}),
+    
+    # Site comparisons for Q_douglasii by month
+    ("Site", {"Species": "Q_douglasii", "Month": "May"}),
+    ("Site", {"Species": "Q_douglasii", "Month": "July"}),
+    ("Site", {"Species": "Q_douglasii", "Month": "September"}),
+    
+    # Species comparisons at Ridge sites by month
+    ("Species", {"Site": "Ridge", "Month": "May"}),
+    ("Species", {"Site": "Ridge", "Month": "July"}),
+    ("Species", {"Site": "Ridge", "Month": "September"}),
+    
+    # Species comparisons at Valley sites by month
+    ("Species", {"Site": "Valley", "Month": "May"}),
+    ("Species", {"Site": "Valley", "Month": "July"}),
+    ("Species", {"Site": "Valley", "Month": "September"})
+]
+
+results = []
+dunn_results = []
+metric = "Shannon"
+
+# Perform Kruskal-Wallis tests for each comparison
+for group_col, filters in comparisons:
+    # Filter data based on the specified conditions
+    subset = merged_data.copy()
+    for col, value in filters.items():
+        subset = subset[subset[col] == value]
+    
+    # Skip if less than two groups are present
+    if len(subset[group_col].unique()) < 2:
+        continue
+    
+    # Prepare data for Kruskal-Wallis test
+    groups = [subset[subset[group_col] == g][metric] for g in subset[group_col].unique()]
+    h_stat, p_value = kruskal(*groups)
+    
+    # Store results
+    result = {
+        "Metric": metric,
+        "Comparison": f"{group_col} - {filters}",
+        "H_stat": h_stat,
+        "p_value": p_value
+    }
+    results.append(result)
+
+    # Print results
+    print(f"Kruskal-Wallis Test - Metric: {metric}, Comparison: {group_col} - {filters}")
+    print(f"H_stat: {h_stat}, p_value: {p_value}\n")
+
+    # Perform Dunn's test if significant
+    if p_value < 0.05:
+        dunn = sp.posthoc_dunn(subset, val_col=metric, group_col=group_col, p_adjust="bonferroni")
+        dunn = dunn.reset_index().melt(id_vars="index", var_name="Comparison", value_name="p_value")
+        dunn["Metric"] = metric
+        dunn["Group_Column"] = group_col
+        dunn["Filters"] = str(filters)
+        dunn_results.append(dunn)
+
+# Save results to CSV
+results_df = pd.DataFrame(results)
+results_file = "kruskal_shannon_comparisons.csv"
+results_df.to_csv(results_file, index=False)
+print(f"Custom Kruskal-Wallis results for Shannon diversity saved to {results_file}")
+
+# Combine and save Dunn's test results
+if dunn_results:
+    all_dunn_results = pd.concat(dunn_results, ignore_index=True)
+    dunn_results_file = "dunn_shannon_comparisons.csv"
+    all_dunn_results.to_csv(dunn_results_file, index=False)
+    print(f"Dunn's test results saved to {dunn_results_file}")
+

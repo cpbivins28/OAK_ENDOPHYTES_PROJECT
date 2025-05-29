@@ -1,0 +1,41 @@
+# Set paths
+alpha_div_path <- "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Alpha_Diversity_Analysis_Interactions/alpha_diversity_metrics.csv"
+metadata_path <- "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+output_dir <- "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Alpha_Diversity_Analysis_Interactions/stats"
+
+# Load data
+alpha_div <- read_csv(alpha_div_path)
+metadata <- read_csv(metadata_path)
+
+# Merge on Sample_ID
+merged <- alpha_div %>%
+  inner_join(metadata, by = "Sample_ID")
+
+# Ensure categorical variables are properly formatted
+merged$Species <- factor(merged$Species)
+merged$Site <- factor(merged$Site)
+merged$Month <- factor(merged$Month, levels = c("May", "July", "September"))
+merged$Tree_ID <- factor(merged$TreeID)  # Use TreeID from metadata
+
+# Fit LMM model
+model_lmm <- lmer(Shannon ~ Species * Site * Month + (1 | Tree_ID), data = merged)
+
+# Type III ANOVA for fixed effects
+anova_table <- Anova(model_lmm, type = "III") %>% as.data.frame()
+anova_table <- tibble::rownames_to_column(anova_table, var = "Effect")
+
+# Extract random effects variance
+random_effects <- as.data.frame(VarCorr(model_lmm))
+random_effects <- random_effects[, c("grp", "vcov")]
+colnames(random_effects) <- c("Group", "Variance")
+
+# Extract model summary (fixed effects)
+model_summary <- broom.mixed::tidy(model_lmm, effects = "fixed")
+
+# Write outputs
+write_csv(anova_table, file.path(output_dir, "LMM_TypeIII_ANOVA.csv"))
+write_csv(random_effects, file.path(output_dir, "LMM_RandomEffects_Variance.csv"))
+write_csv(model_summary, file.path(output_dir, "LMM_Model_Summary.csv"))
+write_csv(merged, file.path(output_dir, "LMM_InputData.csv"))
+
+cat("LMM analysis complete. Results written to:\n", output_dir, "\n")

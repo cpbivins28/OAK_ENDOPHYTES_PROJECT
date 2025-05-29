@@ -1,0 +1,180 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# File paths
+otu_table_path = '/Users/christopherbivins/Desktop/Oak_Endophyte_Project/Relative_Abundance/RA_otu_table.csv'
+guild_table_path = '/Users/christopherbivins/Desktop/Oak_Endophyte_Project/Relative_Abundance/guild_table.csv'
+metadata_path = '/Users/christopherbivins/Desktop/Oak_Endophyte_Project/Relative_Abundance/metadata.csv'
+
+# Load the data files
+otu_table = pd.read_csv(otu_table_path, index_col=0)
+guild_table = pd.read_csv(guild_table_path)
+metadata = pd.read_csv(metadata_path)
+
+# Debugging: Verify metadata columns
+print("Metadata columns:", metadata.columns)
+print(metadata.head())
+
+# Transpose OTU table to align samples as rows
+otu_table_transposed = otu_table.T.reset_index().rename(columns={'index': 'Sample_ID'})
+
+# Merge OTU table with metadata using Sample_ID
+otu_metadata_transposed = otu_table_transposed.merge(metadata, on='Sample_ID')
+
+# Debugging: Verify merge output
+print("OTU Metadata Transposed columns:", otu_metadata_transposed.columns)
+print(otu_metadata_transposed.head())
+
+# Merge the result with guild data
+otu_metadata_complete = otu_metadata_transposed.melt(
+    id_vars=['Sample_ID', 'Species', 'Site', 'Month'],
+    var_name='OTU_ID',
+    value_name='Relative Abundance'
+).merge(guild_table, on='OTU_ID')
+
+# Debugging: Verify final merged DataFrame
+print("OTU Metadata Complete columns:", otu_metadata_complete.columns)
+print(otu_metadata_complete.head())
+
+# Ensure 'Species' column exists and is properly named
+otu_metadata_complete.rename(columns={'Species_x': 'Species'}, inplace=True)
+
+# Summarize data for plotting
+phylum_data = otu_metadata_complete.groupby(['Species', 'Site', 'Month', 'Phylum']).sum(numeric_only=True).reset_index()
+guild_data = otu_metadata_complete.groupby(['Species', 'Site', 'Month', 'primary_lifestyle']).sum(numeric_only=True).reset_index()
+
+# Normalize proportions and save to CSV
+# Phylum proportions
+phylum_proportions = phylum_data.pivot_table(
+    index=['Species', 'Site', 'Month'],
+    columns='Phylum',
+    values='Relative Abundance',
+    aggfunc='sum'
+).fillna(0)
+phylum_proportions = phylum_proportions.div(phylum_proportions.sum(axis=1), axis=0) * 100  # Convert to percentages
+phylum_proportions.to_csv('phylum_proportions.csv')
+
+# Guild proportions
+guild_proportions = guild_data.pivot_table(
+    index=['Species', 'Site', 'Month'],
+    columns='primary_lifestyle',
+    values='Relative Abundance',
+    aggfunc='sum'
+).fillna(0)
+guild_proportions = guild_proportions.div(guild_proportions.sum(axis=1), axis=0) * 100  # Convert to percentages
+guild_proportions.to_csv('guild_proportions.csv')
+
+# Function to create ordered stacked bar plots split by site and species
+def plot_stacked_bar_by_site(data, x, y, hue, site, species, title, filename):
+    # Filter data by species and site
+    data_filtered = data[(data['Species'] == species) & (data['Site'] == site)]
+    data_filtered['Month'] = pd.Categorical(data_filtered['Month'], categories=['May', 'July', 'September'], ordered=True)
+    
+    # Pivot data for stacked bar plot
+    data_pivot = data_filtered.pivot_table(index=x, columns=hue, values=y, aggfunc='sum').fillna(0)
+    data_pivot = data_pivot.div(data_pivot.sum(axis=1), axis=0)  # Normalize to proportions
+
+    # Plot
+    data_pivot.plot(kind='bar', stacked=True, figsize=(12, 8), colormap='Set2', legend=True)
+    plt.title(title)
+    plt.xlabel(x.capitalize())
+    plt.ylabel('Proportion')
+    plt.legend(title=hue, bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+    plt.savefig(filename)
+    plt.show()
+
+# Generate 8 plots
+# Phylum-level plots
+plot_stacked_bar_by_site(
+    data=phylum_data,
+    x='Month',
+    y='Relative Abundance',
+    hue='Phylum',
+    site='Valley',
+    species='Q_douglasii',
+    title='Phylum-Level Proportions for Blue Oaks at Valley Site',
+    filename='phylum_blue_oaks_valley.svg'
+)
+
+plot_stacked_bar_by_site(
+    data=phylum_data,
+    x='Month',
+    y='Relative Abundance',
+    hue='Phylum',
+    site='Ridge',
+    species='Q_douglasii',
+    title='Phylum-Level Proportions for Blue Oaks at Ridge Site',
+    filename='phylum_blue_oaks_ridge.svg'
+)
+
+plot_stacked_bar_by_site(
+    data=phylum_data,
+    x='Month',
+    y='Relative Abundance',
+    hue='Phylum',
+    site='Valley',
+    species='Q_wislizeni',
+    title='Phylum-Level Proportions for Interior Live Oaks at Valley Site',
+    filename='phylum_live_oaks_valley.svg'
+)
+
+plot_stacked_bar_by_site(
+    data=phylum_data,
+    x='Month',
+    y='Relative Abundance',
+    hue='Phylum',
+    site='Ridge',
+    species='Q_wislizeni',
+    title='Phylum-Level Proportions for Interior Live Oaks at Ridge Site',
+    filename='phylum_live_oaks_ridge.svg'
+)
+
+# Guild-level plots
+plot_stacked_bar_by_site(
+    data=guild_data,
+    x='Month',
+    y='Relative Abundance',
+    hue='primary_lifestyle',
+    site='Valley',
+    species='Q_douglasii',
+    title='Guild-Level Proportions for Blue Oaks at Valley Site',
+    filename='guild_blue_oaks_valley.svg'
+)
+
+plot_stacked_bar_by_site(
+    data=guild_data,
+    x='Month',
+    y='Relative Abundance',
+    hue='primary_lifestyle',
+    site='Ridge',
+    species='Q_douglasii',
+    title='Guild-Level Proportions for Blue Oaks at Ridge Site',
+    filename='guild_blue_oaks_ridge.svg'
+)
+
+plot_stacked_bar_by_site(
+    data=guild_data,
+    x='Month',
+    y='Relative Abundance',
+    hue='primary_lifestyle',
+    site='Valley',
+    species='Q_wislizeni',
+    title='Guild-Level Proportions for Interior Live Oaks at Valley Site',
+    filename='guild_live_oaks_valley.svg'
+)
+
+plot_stacked_bar_by_site(
+    data=guild_data,
+    x='Month',
+    y='Relative Abundance',
+    hue='primary_lifestyle',
+    site='Ridge',
+    species='Q_wislizeni',
+    title='Guild-Level Proportions for Interior Live Oaks at Ridge Site',
+    filename='guild_live_oaks_ridge.svg'
+)
+
+print("Plots saved in the current directory.")
+print("Proportions saved as 'phylum_proportions.csv' and 'guild_proportions.csv' in the current directory.")
+

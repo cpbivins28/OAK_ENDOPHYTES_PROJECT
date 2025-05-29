@@ -1,0 +1,55 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Define file path
+guild_proportions_path = '/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Taxonomy_Guild_Analyses/Guild_Proportions/filtered_guild_proportions.csv'
+
+# Load data
+guild_props = pd.read_csv(guild_proportions_path)
+
+# Define relevant guild categories
+saprotrophs = ['wood_saprotroph', 'litter_saprotroph', 'unspecified_saprotroph', 'dung_saprotroph', 'soil_saprotroph']
+plant_pathogen = ['plant_pathogen']
+
+# Melt dataframe to long format
+guild_props = guild_props.melt(id_vars=['Species', 'Site', 'Month'], var_name='Guild', value_name='Proportion')
+
+# Reclassify saprotroph categories into one combined group
+guild_props['Guild'] = guild_props['Guild'].replace(saprotrophs, 'Saprotrophs')
+
+# Filter only the relevant guilds (Saprotrophs and Plant Pathogen)
+guild_props = guild_props[guild_props['Guild'].isin(['Saprotrophs'] + plant_pathogen)]
+
+# Sum proportions instead of taking the mean
+guild_summed = guild_props.groupby(['Species', 'Site', 'Month', 'Guild'], as_index=False)['Proportion'].sum()
+
+# Function to plot line trends
+def plot_guild_trends(df, species, site):
+    subset = df[(df['Species'] == species) & (df['Site'] == site)]
+    subset['Month'] = pd.Categorical(subset['Month'], categories=['May', 'July', 'September'], ordered=True)
+    subset = subset.sort_values('Month')
+    
+    plt.figure(figsize=(8, 6))
+    sns.lineplot(data=subset, x='Month', y='Proportion', hue='Guild', marker='o', linewidth=2.5, palette={'plant_pathogen': 'red', 'Saprotrophs': 'blue'})
+    
+    plt.title(f'Guild Proportions Over Time ({species}, {site})')
+    plt.ylabel('Summed Proportion')
+    plt.xlabel('Month')
+    plt.legend(title='Guild')
+    plt.ylim(0, 1)
+    plt.grid(False)
+    plt.tight_layout()
+    
+    filename = f'guild_trends_{species}_{site}.svg'
+    plt.savefig(filename)
+    plt.show()
+
+# Generate plots
+species_site_pairs = [('Q_douglasii', 'Ridge'), ('Q_douglasii', 'Valley'), ('Q_wislizeni', 'Ridge'), ('Q_wislizeni', 'Valley')]
+
+for species, site in species_site_pairs:
+    plot_guild_trends(guild_summed, species, site)
+
+print("Corrected plots saved successfully.")
+

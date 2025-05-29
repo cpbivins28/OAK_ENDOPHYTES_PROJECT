@@ -1,0 +1,214 @@
+import pandas as pd
+import numpy as np
+from scipy.spatial.distance import pdist, squareform
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+
+# File paths
+otu_table_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+
+# Load data
+otu_table = pd.read_csv(otu_table_path, index_col=0)
+metadata = pd.read_csv(metadata_path)
+
+# Align metadata with OTU table
+metadata = metadata[metadata["Sample_ID"].isin(otu_table.columns)].set_index("Sample_ID")
+
+# Transpose OTU table for distance calculation (samples as rows)
+otu_table_transposed = otu_table.T
+
+# Compute Bray-Curtis distance matrix
+bray_curtis_distances = pdist(otu_table_transposed, metric="braycurtis")
+bray_curtis_matrix = squareform(bray_curtis_distances)
+
+# Save Bray-Curtis distance matrix
+pd.DataFrame(bray_curtis_matrix, index=otu_table_transposed.index, columns=otu_table_transposed.index).to_csv("bray_curtis_distance_matrix.csv")
+
+# Principal Coordinates Analysis (PCoA)
+pcoa = PCA(n_components=3)
+pcoa_result = pcoa.fit_transform(bray_curtis_matrix)
+variance_explained = pcoa.explained_variance_ratio_ * 100
+
+# Save PCoA results
+pcoa_df = pd.DataFrame(pcoa_result, columns=["Axis 1", "Axis 2", "Axis 3"], index=otu_table_transposed.index)
+pcoa_df.to_csv("pcoa_results.csv")
+
+# Define color palettes
+species_palette = {"Q_douglasii": "#88CCEE", "Q_wislizeni": "#44AA99"}
+month_palette = {"May": "#E69F00", "July": "#56B4E9", "September": "#009E73"}
+site_palette = {"Ridge": "#D55E00", "Valley": "#0072B2"}
+
+# Function to plot PCoA with legends
+def plot_pcoa(color_by, palette, filename):
+    plt.figure(figsize=(10, 8))
+    unique_labels = metadata[color_by].unique()
+    handles = []
+    
+    for sample in pcoa_df.index:
+        if sample in metadata.index:
+            color = palette[metadata.loc[sample, color_by]]
+            scatter = plt.scatter(
+                pcoa_df.loc[sample, "Axis 1"],
+                pcoa_df.loc[sample, "Axis 2"],
+                color=color, edgecolors='black', alpha=0.8, s=100
+            )
+            
+    for label in unique_labels:
+        handles.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=palette[label], markersize=10, label=label))
+    
+    plt.xlabel(f"PCoA Axis 1 ({variance_explained[0]:.2f}%)")
+    plt.ylabel(f"PCoA Axis 2 ({variance_explained[1]:.2f}%)")
+    plt.title(f"PCoA Plot Colored by {color_by}")
+    plt.legend(handles=handles, title=color_by)
+    plt.grid(False)
+    plt.savefig(filename, format="svg")
+    plt.show()
+
+# Generate and save plots
+plot_pcoa("Species", species_palette, "pcoa_species.svg")
+plot_pcoa("Month", month_palette, "pcoa_month.svg")
+plot_pcoa("Site", site_palette, "pcoa_site.svg")
+
+
+
+### PERMANOVA
+
+library(vegan)
+
+# File paths
+otu_table_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+
+
+# Load data
+otu_table <- read.csv(otu_table_path, row.names = 1)
+metadata <- read.csv(metadata_path)
+
+# Standardize Sample_IDs in metadata to match OTU table column names
+metadata$Sample_ID <- gsub("-", ".", metadata$Sample_ID)
+
+# Align metadata with OTU table
+metadata <- metadata[metadata$Sample_ID %in% colnames(otu_table), ]
+
+# Transpose OTU table for Bray-Curtis calculation
+otu_table_transposed <- t(otu_table)
+
+# Compute Bray-Curtis distance matrix
+bray_curtis <- vegdist(otu_table_transposed, method = "bray")
+
+# Define variable orders for PERMANOVA
+variable_orders <- list(
+  c("Site", "Species", "Month"),
+  c("Species", "Site", "Month"),
+  c("Month", "Site", "Species")
+)
+
+# Run PERMANOVA for each order and save results
+results <- list()
+for (order in variable_orders) {
+  formula <- as.formula(paste("bray_curtis ~", paste(order, collapse = " + ")))
+  results[[paste(order, collapse = " -> ")]] <- adonis2(formula, data = metadata, permutations = 999)
+}
+
+# Save PERMANOVA results to CSV
+results_df <- do.call(rbind, lapply(names(results), function(order) {
+  res <- results[[order]]
+  data.frame(Order = order, Source = rownames(res), res)
+}))
+
+write.csv(results_df, "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Bray-Curtis/Stats/permanova_results.csv", row.names = FALSE)
+
+# Print PERMANOVA results
+print(results_df)
+
+### PERMANOVA - INTERACTIONS
+
+# Load necessary libraries
+library(vegan)
+
+# File paths
+otu_table_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+
+# Load data
+otu_table <- read.csv(otu_table_path, row.names = 1)
+metadata <- read.csv(metadata_path)
+
+# Align metadata with OTU table
+metadata$Sample_ID <- gsub("-", ".", metadata$Sample_ID)
+metadata <- metadata[metadata$Sample_ID %in% colnames(otu_table), ]
+
+# Transpose OTU table for Bray-Curtis calculation
+otu_table_transposed <- t(otu_table)
+
+# Compute Bray-Curtis distance matrix
+bray_curtis <- vegdist(otu_table_transposed, method = "bray")
+
+# Define the PERMANOVA formula including interactions
+interaction_formula <- bray_curtis ~ Site * Species * Month
+
+# Run PERMANOVA including interactions
+interaction_permanova <- adonis2(interaction_formula, data = metadata, permutations = 999)
+
+# Print interaction PERMANOVA results
+print(interaction_permanova)
+
+# Save interaction PERMANOVA results to CSV
+interaction_results_df <- as.data.frame(interaction_permanova)
+write.csv(interaction_results_df, "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Bray-Curtis/Stats/interaction_permanova_results.csv")
+
+# Optional: Test specific interactions separately
+specific_interaction_formula <- bray_curtis ~ Site + Species + Month + Site:Species
+specific_interaction_permanova <- adonis2(specific_interaction_formula, data = metadata, permutations = 999)
+
+# Print specific interaction PERMANOVA results
+print(specific_interaction_permanova)
+
+# Save specific interaction PERMANOVA results to CSV
+specific_interaction_results_df <- as.data.frame(specific_interaction_permanova)
+write.csv(specific_interaction_results_df, "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Bray-Curtis/Stats/specific_interaction_permanova_results.csv")
+
+### PERMANOVA - TreeID
+
+# Load necessary library
+library(vegan)
+
+# File paths (adjust these as needed)
+otu_table_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+output_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Bray-Curtis/Stats/TreeID_permanova_results.csv"
+
+# Load data
+otu_table <- read.csv(otu_table_path, row.names = 1)
+metadata <- read.csv(metadata_path)
+
+# Adjust Sample_ID formatting if needed (to match column names in otu_table)
+metadata$Sample_ID <- gsub("-", ".", metadata$Sample_ID)
+metadata <- metadata[metadata$Sample_ID %in% colnames(otu_table), ]
+
+# Transpose OTU table for Bray-Curtis calculation
+otu_table_transposed <- t(otu_table)
+
+# Compute Bray-Curtis distance matrix
+bray_curtis <- vegdist(otu_table_transposed, method = "bray")
+
+# Define the PERMANOVA formula with TreeID only
+formula <- as.formula("bray_curtis ~ TreeID")
+
+# Run PERMANOVA
+treeid_permanova <- adonis2(formula, data = metadata, permutations = 999)
+
+# Convert results to a data frame
+results_df <- as.data.frame(treeid_permanova)
+
+# Add a column that holds the row names (e.g., "TreeID", "Residual", "Total")
+results_df$Term <- rownames(results_df)
+
+# Reorder columns so 'Term' appears first
+results_df <- results_df[, c("Term", "Df", "SumOfSqs", "R2", "F", "Pr(>F)")]
+
+# Save results to CSV (row.names = FALSE to avoid duplicate labeling)
+write.csv(results_df, output_path, row.names = FALSE)
+cat("PERMANOVA (TreeID only) results exported to:", output_path, "\n")
+

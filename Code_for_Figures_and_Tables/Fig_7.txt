@@ -1,0 +1,341 @@
+#### DESeq2 R Script
+
+ # Load required libraries
+library(DESeq2)
+library(dplyr)
+
+# ---------------------------
+# 1. Read in Data and Prepare
+# ---------------------------
+# Read in the raw counts OTU table and convert it to a numeric matrix
+raw_otu_table <- read.csv("/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Raw_Abundance/raw_otu_table.csv", 
+                           row.names = 1, 
+                           stringsAsFactors = FALSE)
+raw_otu_table <- as.matrix(raw_otu_table)
+# Ensure counts are stored as integers
+storage.mode(raw_otu_table) <- "integer"
+
+# Read in the metadata
+metadata <- read.csv("/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv")
+
+# Ensure Month is a factor with proper levels
+metadata$Month <- factor(metadata$Month, levels = c("May", "July", "September"))
+
+# (Note: We no longer combine May and July since we want separate contrasts.)
+# Adjust the Sample_ID to match the OTU table (replace "-" with ".")
+metadata <- metadata %>%
+  mutate(Adjusted_Sample_ID = gsub("-", ".", Sample_ID))
+
+# Filter metadata to include only those samples that exist in the OTU table
+metadata <- metadata %>% filter(Adjusted_Sample_ID %in% colnames(raw_otu_table))
+
+# --------------------------------------
+# 2. Define Subsets by Species and Site
+# --------------------------------------
+subset_list <- list(
+  Blue_Ridge     = metadata %>% filter(Species == "Q_douglasii", Site == "Ridge"),
+  Blue_Valley    = metadata %>% filter(Species == "Q_douglasii", Site == "Valley"),
+  Interior_Ridge = metadata %>% filter(Species == "Q_wislizeni", Site == "Ridge"),
+  Interior_Valley= metadata %>% filter(Species == "Q_wislizeni", Site == "Valley")
+)
+
+# ----------------------------------------------------------
+# 3. Loop over Each Subset and Run DESeq2 for Three Contrasts
+# ----------------------------------------------------------
+# Prepare a list to store DESeq2 results for each subset and contrast
+deseq_results <- list()
+
+# Set output directory for DESeq2 CSV files
+output_dir <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Taxonomy_Guild_Analyses/September_Spike/DESEQ2/"
+
+# Loop through each subset
+for(group in names(subset_list)){
+  
+  cat("Running DESeq2 for group:", group, "\n")
+  
+  # Subset metadata for the group and get adjusted sample IDs
+  subset_meta <- subset_list[[group]]
+  sample_ids <- subset_meta$Adjusted_Sample_ID  # Use adjusted IDs
+  
+  # Subset the OTU table for these samples
+  subset_otu <- raw_otu_table[, sample_ids]
+  
+  # Create a DESeq2 dataset using Month as the design factor (three levels)
+  dds <- DESeqDataSetFromMatrix(countData = subset_otu,
+                                colData = subset_meta,
+                                design = ~ Month)
+  
+  # Pre-filter: remove OTUs with very low counts (adjust threshold as needed)
+  dds <- dds[rowSums(counts(dds)) > 10, ]
+  
+  # Estimate size factors using "poscounts" to handle zeros
+  dds <- estimateSizeFactors(dds, type = "poscounts")
+  
+  # Run the DESeq2 analysis
+  dds <- DESeq(dds)
+  
+  # Define contrasts:
+  contrasts <- list(
+    "Sep_vs_May" = c("Month", "September", "May"),
+    "Sep_vs_July" = c("Month", "September", "July"),
+    "July_vs_May" = c("Month", "July", "May")
+  )
+  
+  # For each contrast, extract results and save
+  for(con_name in names(contrasts)){
+    cat("  Contrast:", con_name, "\n")
+    res <- results(dds, contrast = contrasts[[con_name]])
+    res <- lfcShrink(dds, contrast = contrasts[[con_name]], res = res, type = "normal")
+    res_ordered <- res[order(res$padj), ]
+    
+    # Save results to CSV: filename format: <Group>_<Contrast>_results.csv
+    out_file <- paste0(output_dir, group, "_", con_name, "_results.csv")
+    write.csv(as.data.frame(res_ordered), file = out_file)
+    cat("  Results saved to:", out_file, "\n")
+    
+    # Store in our list for later use
+    deseq_results[[paste(group, con_name, sep = "_")]] <- res_ordered
+  }
+  cat("\n")
+}
+
+
+import os
+import glob
+import pandas as pd
+
+# -------------------------------
+# SETTINGS: Directories & Thresholds
+# -------------------------------
+# Directory containing DESeq2 CSV files
+deseq_dir = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Taxonomy_Guild_Analyses/September_Spike/DESEQ2"
+# Output file for combined significant OTUs (DESeq2 only)
+output_file = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Taxonomy_Guild_Analyses/September_Spike/significant_OTUs_DESeq2_only.csv"
+
+# Significance thresholds for DESeq2
+padj_threshold = 0.05
+lfc_threshold = 1.0  # absolute log2 fold change threshold
+
+# -------------------------------
+# PROCESS DESeq2 RESULTS
+# -------------------------------
+# List all CSV files in the DESeq2 directory
+deseq_files = glob.glob(os.path.join(deseq_dir, "*.csv"))
+deseq_list = []
+
+for f in deseq_files:
+    # Expected filename format: <Group>_<Contrast>_results.csv 
+    # e.g., "Blue_Ridge_Sep_vs_May_results.csv"
+    basename = os.path.basename(f)
+    parts = basename.split("_")
+    # Construct Group from the first two parts (e.g., "Blue_Ridge")
+    group = parts[0] + "_" + parts[1]
+    # Construct Contrast as the combination of the month parts (e.g., "Sep_vs_May")
+    # Note: parts[2] is first month, parts[3] should be "vs", parts[4] is second month.
+    contrast = parts[2] + "_" + parts[4].split(".")[0]
+    
+    # Read CSV into DataFrame
+    df = pd.read_csv(f)
+    # Ensure an explicit OTU_ID column exists – if not, assume the first column is OTU_ID
+    if 'OTU_ID' not in df.columns:
+        df = df.rename(columns={df.columns[0]: 'OTU_ID'})
+    
+    # Filter for significant OTUs based on padj and absolute log2FoldChange
+    df_sig = df[(df['padj'] < padj_threshold) & (df['log2FoldChange'].abs() >= lfc_threshold)]
+    
+    if not df_sig.empty:
+        df_sig['Analysis_Type'] = 'DESeq2'
+        df_sig['Group'] = group
+        df_sig['Contrast'] = contrast
+        # Retain key columns (adjust if your CSV contains additional useful info)
+        df_sig = df_sig[['Analysis_Type', 'Group', 'Contrast', 'OTU_ID', 'log2FoldChange', 'padj']]
+        deseq_list.append(df_sig)
+
+if deseq_list:
+    deseq_combined = pd.concat(deseq_list, ignore_index=True)
+else:
+    deseq_combined = pd.DataFrame()
+
+# Save combined DESeq2 results to file
+deseq_combined.to_csv(output_file, index=False)
+print("Combined significant OTU results (DESeq2 only) saved to:", output_file)
+
+# -------------------------------
+# MERGE WITH GUILD TABLE
+# -------------------------------
+guild_table_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/guild_table.csv"
+guild_df = pd.read_csv(guild_table_path)
+# If the first column is unnamed, rename it to "OTU_ID"
+guild_df.rename(columns={"Unnamed: 0": "OTU_ID"}, inplace=True)
+
+# Merge on OTU_ID to add taxonomic and guild information
+merged_df = pd.merge(deseq_combined, guild_df, on="OTU_ID", how="left")
+merged_output = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Taxonomy_Guild_Analyses/September_Spike/significant_OTUs_DESeq2_with_guild.csv"
+merged_df.to_csv(merged_output, index=False)
+print("Merged DESeq2 significant OTUs with guild table saved to:", merged_output)
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+
+# Load the merged DESeq2 and guild results
+merged_output = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Taxonomy_Guild_Analyses/September_Spike/significant_OTUs_DESeq2_with_guild.csv"
+merged_df = pd.read_csv(merged_output)
+
+# -------------------------------
+# SEPARATE INCREASING AND DECREASING OTUs
+# -------------------------------
+increasing_otus = merged_df[merged_df["log2FoldChange"] > 0]
+decreasing_otus = merged_df[merged_df["log2FoldChange"] < 0]
+
+# -------------------------------
+# SUMMARIZE OTU COUNTS BY GROUP
+# -------------------------------
+summary_counts = merged_df.groupby("Group").apply(
+    lambda df: pd.Series({
+        "Increasing_OTUs": (df["log2FoldChange"] > 0).sum(),
+        "Decreasing_OTUs": (df["log2FoldChange"] < 0).sum()
+    })
+).reset_index()
+
+summary_counts.to_csv("OTUs_Increasing_vs_Decreasing_by_Group.csv", index=False)
+print("OTU count summary by group saved to 'OTUs_Increasing_vs_Decreasing_by_Group.csv'.")
+
+# -------------------------------
+# SUMMARIZE TAXONOMY (by Phylum, Class, Order)
+# -------------------------------
+taxonomy_summary_increase = increasing_otus.groupby(["Phylum", "Class", "Order"]).size().reset_index(name="Count")
+taxonomy_summary_decrease = decreasing_otus.groupby(["Phylum", "Class", "Order"]).size().reset_index(name="Count")
+taxonomy_summary_increase.to_csv("Taxonomy_of_Increasing_OTUs.csv", index=False)
+taxonomy_summary_decrease.to_csv("Taxonomy_of_Decreasing_OTUs.csv", index=False)
+print("Taxonomy summaries saved.")
+
+# -------------------------------
+# SUMMARIZE ECOLOGICAL GUILDS
+# -------------------------------
+guild_summary_increase = increasing_otus.groupby("primary_lifestyle").size().reset_index(name="Count")
+guild_summary_decrease = decreasing_otus.groupby("primary_lifestyle").size().reset_index(name="Count")
+guild_summary_increase.to_csv("Guild_Analysis_of_Increasing_OTUs.csv", index=False)
+guild_summary_decrease.to_csv("Guild_Analysis_of_Decreasing_OTUs.csv", index=False)
+print("Guild summaries saved.")
+
+# -------------------------------
+# VISUALIZATIONS
+# -------------------------------
+
+# (1) Overall Bar Plot: OTU Counts by Group (Increasing vs. Decreasing)
+plt.figure(figsize=(8,6))
+x = summary_counts['Group']
+incr_counts = summary_counts['Increasing_OTUs']
+decr_counts = summary_counts['Decreasing_OTUs']
+width = 0.35
+x_indexes = np.arange(len(x))
+
+plt.bar(x_indexes, incr_counts, width=width, label='Increasing OTUs')
+plt.bar(x_indexes + width, decr_counts, width=width, label='Decreasing OTUs')
+plt.xticks(x_indexes + width/2, x, rotation=45, ha='right')
+plt.ylabel("Number of OTUs")
+plt.title("Significant OTU Changes by Group (DESeq2)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("OTU_counts_by_group.svg")
+plt.show()
+
+# (2) Volcano Plot: Annotated with OTU IDs for each group
+plt.figure(figsize=(8,6))
+groups = merged_df["Group"].unique()
+colors = ['blue', 'green', 'orange', 'purple']  # distinct colors for each group
+
+for i, group in enumerate(groups):
+    df_group = merged_df[merged_df["Group"] == group].copy()
+    # Calculate -log10(padj)
+    df_group["neg_log10_padj"] = -np.log10(df_group["padj"])
+    plt.scatter(df_group["log2FoldChange"], df_group["neg_log10_padj"], 
+                alpha=0.7, s=40, label=group, color=colors[i])
+    
+    # Annotate top 3 increasing OTUs for this group
+    top_incr = df_group[df_group["log2FoldChange"] > 0].sort_values("log2FoldChange", ascending=False).head(3)
+    for _, row in top_incr.iterrows():
+         plt.annotate(row["OTU_ID"], 
+                      (row["log2FoldChange"], row["neg_log10_padj"]),
+                      textcoords="offset points", xytext=(5,5), fontsize=8, color=colors[i])
+    
+    # Annotate top 3 decreasing OTUs for this group
+    top_decr = df_group[df_group["log2FoldChange"] < 0].sort_values("log2FoldChange", ascending=False).head(3)
+    for _, row in top_decr.iterrows():
+         plt.annotate(row["OTU_ID"], 
+                      (row["log2FoldChange"], row["neg_log10_padj"]),
+                      textcoords="offset points", xytext=(5,-10), fontsize=8, color=colors[i])
+
+plt.xlabel("Log2 Fold Change")
+plt.ylabel("-Log10(padj)")
+plt.title("Volcano Plot of DESeq2 Results (Annotated)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("Volcano_DESeq2_Annotated.svg")
+plt.show()
+
+# (3) Guild Bar Plots by Group (separate for increasing and decreasing OTUs)
+output_dir = "./Guild_Bar_Plots_by_Group"
+os.makedirs(output_dir, exist_ok=True)
+
+for group in groups:
+    # Filter data for current group
+    df_group_incr = increasing_otus[increasing_otus["Group"] == group]
+    df_group_decr = decreasing_otus[decreasing_otus["Group"] == group]
+    
+    # For guilds, count the number of OTUs per primary_lifestyle for each subset
+    guild_incr = df_group_incr.groupby("primary_lifestyle").size().reset_index(name="Count")
+    guild_decr = df_group_decr.groupby("primary_lifestyle").size().reset_index(name="Count")
+    
+    # Increasing OTUs Guild Plot for this group
+    plt.figure(figsize=(8,6))
+    guild_incr = guild_incr.sort_values("Count", ascending=False)
+    plt.bar(guild_incr["primary_lifestyle"], guild_incr["Count"])
+    plt.xticks(rotation=45, ha='right')
+    plt.ylabel("Number of Increasing OTUs")
+    plt.title(f"Ecological Guilds (Increasing OTUs) - {group}")
+    plt.tight_layout()
+    filename_inc = os.path.join(output_dir, f"Guild_increasing_OTUs_{group}.svg")
+    plt.savefig(filename_inc)
+    plt.show()
+    print(f"Saved {filename_inc}")
+    
+    # Decreasing OTUs Guild Plot for this group
+    plt.figure(figsize=(8,6))
+    guild_decr = guild_decr.sort_values("Count", ascending=False)
+    plt.bar(guild_decr["primary_lifestyle"], guild_decr["Count"])
+    plt.xticks(rotation=45, ha='right')
+    plt.ylabel("Number of Decreasing OTUs")
+    plt.title(f"Ecological Guilds (Decreasing OTUs) - {group}")
+    plt.tight_layout()
+    filename_decr = os.path.join(output_dir, f"Guild_decreasing_OTUs_{group}.svg")
+    plt.savefig(filename_decr)
+    plt.show()
+    print(f"Saved {filename_decr}")
+
+# (4) EXPORT 8 CSV FILES (2 sets of 4 split by group, ordered by log2FoldChange)
+csv_output_dir = "./Extracted_OTU_CSVs"
+os.makedirs(csv_output_dir, exist_ok=True)
+
+for group in groups:
+    # Filter data for current group
+    df_group_incr = increasing_otus[increasing_otus["Group"] == group].copy()
+    df_group_decr = decreasing_otus[decreasing_otus["Group"] == group].copy()
+    
+    # Sort by log2FoldChange descending
+    df_group_incr_sorted = df_group_incr.sort_values("log2FoldChange", ascending=False)
+    df_group_decr_sorted = df_group_decr.sort_values("log2FoldChange", ascending=False)
+    
+    # Save to CSV files
+    incr_csv_filename = os.path.join(csv_output_dir, f"Increasing_OTUs_{group}.csv")
+    decr_csv_filename = os.path.join(csv_output_dir, f"Decreasing_OTUs_{group}.csv")
+    
+    df_group_incr_sorted.to_csv(incr_csv_filename, index=False)
+    df_group_decr_sorted.to_csv(decr_csv_filename, index=False)
+    
+    print(f"Saved {incr_csv_filename} with {len(df_group_incr_sorted)} OTUs.")
+    print(f"Saved {decr_csv_filename} with {len(df_group_decr_sorted)} OTUs.")
+

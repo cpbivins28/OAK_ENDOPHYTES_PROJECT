@@ -1,0 +1,156 @@
+### FIGURE 1 PLOT
+
+
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Load data
+otu_table_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+
+otu_table = pd.read_csv(otu_table_path, index_col=0)
+metadata = pd.read_csv(metadata_path)
+
+# Define Shannon diversity metric
+def shannon_diversity(otu_counts):
+    proportions = otu_counts[otu_counts > 0] / otu_counts.sum()
+    return -np.sum(proportions * np.log(proportions))
+
+# Calculate Shannon diversity for each sample
+shannon_diversity_values = {
+    sample: shannon_diversity(otu_table[sample]) for sample in otu_table.columns
+}
+
+# Add Shannon diversity to metadata
+metadata["Shannon"] = metadata["Sample_ID"].map(shannon_diversity_values)
+
+# Map species names to common names
+species_mapping = {"Q_douglasii": "Blue Oak", "Q_wislizeni": "Interior Live Oak"}
+metadata["Species"] = metadata["Species"].map(species_mapping)
+
+# Define color scheme
+species_palette = {"Blue Oak": "#88CCEE", "Interior Live Oak": "#44AA99"}
+
+# Ensure months are in chronological order
+metadata["Month"] = pd.Categorical(metadata["Month"], categories=["May", "July", "September"], ordered=True)
+
+# Generate separate plots for Ridge and Valley sites
+for site in metadata["Site"].unique():
+    plt.figure(figsize=(6, 5))
+    site_data = metadata[metadata["Site"] == site].copy()
+    site_data["Month"] = pd.Categorical(site_data["Month"], categories=["May", "July", "September"], ordered=True)
+    
+    ax = sns.boxplot(
+        data=site_data,
+        x="Month",
+        y="Shannon",
+        hue="Species",
+        dodge=True,
+        palette=species_palette,
+        width=0.6,
+        showcaps=False,
+        boxprops={'facecolor': 'none', 'edgecolor': 'black'},
+        whiskerprops={'color': 'black'},
+        medianprops={'color': 'black', 'linewidth': 1.5}
+    )
+    
+    sns.stripplot(
+        data=site_data,
+        x="Month",
+        y="Shannon",
+        hue="Species",
+        palette=species_palette,
+        dodge=True,
+        jitter=True,
+        alpha=0.7,
+        size=4,
+        marker="o",
+        edgecolor="black",
+        linewidth=0.5,
+        ax=ax
+    )
+    
+    # Remove the top and right spines
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    
+    plt.title(f"Shannon Diversity by Month ({site} Site)")
+    plt.xlabel("Month")
+    plt.ylabel("Shannon Diversity")
+    plt.legend(title="Species", loc="upper right")
+    plt.tight_layout()
+    plt.savefig(f"shannon_diversity_{site.lower()}.svg", format="svg")
+    plt.show()
+
+print("Shannon diversity plots for Ridge and Valley sites generated and saved as SVG files.")
+
+
+### KRUSKAL-WALLIS TEST
+
+import pandas as pd
+import numpy as np
+from scipy.stats import kruskal
+
+# Load data
+otu_table_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project/Relative_Abundance/RA_otu_table.csv"
+metadata_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project/Relative_Abundance/metadata.csv"
+
+# Read OTU table and metadata
+otu_table = pd.read_csv(otu_table_path, index_col=0)
+metadata = pd.read_csv(metadata_path)
+
+# Define Shannon diversity metric
+def shannon_diversity(otu_counts):
+    proportions = otu_counts[otu_counts > 0] / otu_counts.sum()
+    return -sum(proportions * np.log(proportions))
+
+# Calculate Shannon diversity for each sample
+shannon_diversity_values = {
+    sample: shannon_diversity(otu_table[sample]) for sample in otu_table.columns
+}
+
+# Add Shannon diversity to metadata
+metadata["Shannon"] = metadata["Sample_ID"].map(shannon_diversity_values)
+
+# Debugging: Check for NaN values
+print(f"Number of NaN values in Shannon diversity: {metadata['Shannon'].isna().sum()}")
+
+# Filter data for overall species comparison
+overall_species_data = metadata[['Species', 'Shannon']].dropna()  # Drop rows with NaN Shannon values
+
+# Debugging: Check group sizes
+print("Valid Shannon diversity counts per species:")
+print(overall_species_data.groupby('Species')["Shannon"].count())
+
+# Group data by species
+groups = [
+    overall_species_data[overall_species_data['Species'] == species]['Shannon'] 
+    for species in overall_species_data['Species'].unique()
+]
+
+# Ensure there are no empty groups
+if all(len(group) > 0 for group in groups):
+    # Perform Kruskal-Wallis test
+    h_stat, p_value = kruskal(*groups)
+
+    # Output results
+    result = {
+        "Metric": "Shannon",
+        "Comparison": "Overall Species",
+        "H_stat": h_stat,
+        "p_value": p_value
+    }
+
+    print("Kruskal-Wallis Test for Overall Species Comparison (Shannon Diversity):")
+    print(f"H-statistic: {h_stat}, p-value: {p_value}")
+
+    # Save results to a CSV file
+    result_df = pd.DataFrame([result])
+    result_df.to_csv("overall_species_shannon_results.csv", index=False)
+    print("Results saved to overall_species_shannon_results.csv")
+else:
+    print("One or more groups have no valid Shannon diversity values. Test cannot proceed.")
+
+

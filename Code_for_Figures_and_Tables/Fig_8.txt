@@ -1,0 +1,89 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+
+# Load the CSV file with DESeq2 and guild results
+input_file = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Taxonomy_Guild_Analyses/September_Spike/significant_OTUs_DESeq2_with_guild.csv"
+df = pd.read_csv(input_file)
+
+# Map primary_lifestyle to our simplified guilds:
+# any guild with "saprotroph" becomes "Saprotrophs",
+# any guild with "plant pathogen" (or "plant_pathogen") becomes "Plant Pathogens"
+def map_guild(g):
+    if pd.isnull(g):
+        return None
+    g_lower = str(g).lower()
+    if "saprotroph" in g_lower:
+        return "Saprotrophs"
+    elif "plant pathogen" in g_lower or "plant_pathogen" in g_lower:
+        return "Plant Pathogens"
+    else:
+        return None
+
+df['Mapped_Guild'] = df['primary_lifestyle'].apply(map_guild)
+# Only keep rows of interest (those mapped to our two guilds)
+df = df[df['Mapped_Guild'].notnull()]
+
+# Get unique site/species combos (assumed to be in the 'Group' column)
+groups = df['Group'].unique()
+
+# Create an output directory for the plots
+output_dir = "./Simplified_Guild_Plots"
+os.makedirs(output_dir, exist_ok=True)
+
+# Loop through each group to create a diverging bar plot
+for group in groups:
+    df_group = df[df['Group'] == group]
+    
+    # Define the two guilds of interest
+    guilds = ["Saprotrophs", "Plant Pathogens"]
+    
+    # Count OTUs for increasing (log2FoldChange > 0) and decreasing (log2FoldChange < 0)
+    inc_counts = {}
+    dec_counts = {}
+    for guild in guilds:
+        df_guild = df_group[df_group['Mapped_Guild'] == guild]
+        inc_counts[guild] = (df_guild['log2FoldChange'] > 0).sum()
+        dec_counts[guild] = (df_guild['log2FoldChange'] < 0).sum()
+    
+    # Prepare plot data: one bar for increasing and one for decreasing per guild.
+    # We'll offset them slightly so they don't overlap.
+    x = np.arange(len(guilds))
+    width = 0.35
+    
+    # Colors as specified: blue for Saprotrophs, red for Plant Pathogens.
+    colors = {"Saprotrophs": "blue", "Plant Pathogens": "red"}
+    
+    inc_vals = [inc_counts[g] for g in guilds]
+    dec_vals = [dec_counts[g] for g in guilds]
+    
+    fig, ax = plt.subplots(figsize=(8,6))
+    
+    # Plot increasing OTU counts (above zero)
+    ax.bar(x - width/2, inc_vals, width,
+           color=[colors[g] for g in guilds],
+           label="Increasing OTUs")
+    # Plot decreasing OTU counts (as negative values below zero)
+    ax.bar(x + width/2, [-d for d in dec_vals], width,
+           color=[colors[g] for g in guilds],
+           label="Decreasing OTUs")
+    
+    ax.axhline(0, color='black', linewidth=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(guilds)
+    ax.set_ylabel("OTU Count (positive: increasing, negative: decreasing)")
+    ax.set_title(f"Simplified Guild OTU Changes for {group}")
+    
+    # Create a custom legend indicating the guild colors
+    from matplotlib.patches import Patch
+    legend_elements = [Patch(facecolor='blue', label='Saprotrophs'),
+                       Patch(facecolor='red', label='Plant Pathogens')]
+    ax.legend(handles=legend_elements, title="Guild")
+    
+    plt.tight_layout()
+    output_file = os.path.join(output_dir, f"Simplified_Guild_Bar_Plot_{group}.svg")
+    plt.savefig(output_file)
+    plt.show()
+    print(f"Saved plot for {group} to {output_file}")
+

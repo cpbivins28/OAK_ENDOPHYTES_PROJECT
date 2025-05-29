@@ -1,0 +1,218 @@
+# Load required packages
+library(dplyr)
+library(tidyr)
+library(readr)
+
+# ---------------------------
+# STEP 1: Load and clean data
+# ---------------------------
+
+# 1a. Read presence/absence OTU table
+otu_pa <- read_csv(
+  "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Presence_Absence/PA_otu_table.csv"
+)
+
+# Rename first column to OTU_ID if needed
+if (colnames(otu_pa)[1] != "OTU_ID") {
+  colnames(otu_pa)[1] <- "OTU_ID"
+}
+
+# Convert to data.frame and set OTU_ID as rownames
+otu_pa_df <- as.data.frame(otu_pa)
+rownames(otu_pa_df) <- otu_pa_df$OTU_ID
+otu_pa_df$OTU_ID <- NULL
+
+# 1b. Read metadata
+metadata <- read_csv(
+  "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Presence_Absence/metadata.csv"
+)
+
+# Replace hyphens with periods in Sample_ID to match OTU table
+metadata <- metadata %>%
+  mutate(Sample_ID = gsub("-", ".", Sample_ID))
+
+# Keep only samples that exist in the OTU table
+metadata <- metadata %>%
+  filter(Sample_ID %in% colnames(otu_pa_df))
+
+# 1c. Read guild annotation table
+guild <- read_csv(
+  "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Presence_Absence/guild_table.csv"
+)
+
+# Rename first column to OTU_ID if needed
+if (colnames(guild)[1] != "OTU_ID") {
+  colnames(guild)[1] <- "OTU_ID"
+}
+
+# ---------------------------
+# STEP 2: Determine presence by month
+# ---------------------------
+
+# For each OTU, check presence across May, July, and September
+presence_df <- data.frame(
+  OTU_ID = rownames(otu_pa_df),
+  May = rowSums(
+    otu_pa_df[, metadata$Sample_ID[metadata$Month == "May"], drop = FALSE]
+  ) > 0,
+  July = rowSums(
+    otu_pa_df[, metadata$Sample_ID[metadata$Month == "July"], drop = FALSE]
+  ) > 0,
+  September = rowSums(
+    otu_pa_df[, metadata$Sample_ID[metadata$Month == "September"], drop = FALSE]
+  ) > 0,
+  stringsAsFactors = FALSE
+)
+
+# ---------------------------
+# STEP 3: Assign pattern category
+# ---------------------------
+
+presence_df <- presence_df %>%
+  mutate(
+    pattern = case_when(
+      May & !July & !September           ~ "Early Only",
+      May & July & !September            ~ "Declining",
+      !May & July & !September           ~ "Mid Only",
+      !May & July & September            ~ "Increasing",
+      !May & !July & September           ~ "Late Only",
+      May & July & September             ~ "Stable",
+      May & !July & September            ~ "Resurgent",
+      TRUE                               ~ NA_character_
+    )
+  ) %>%
+  # Exclude OTUs with no presence in any month
+  filter(!is.na(pattern))
+
+# ---------------------------
+# STEP 4a: Create long-form expanded table
+# ---------------------------
+
+# Turn presence/absence matrix into long format, keep only presences
+otu_long <- as.data.frame(otu_pa_df) %>%
+  mutate(OTU_ID = rownames(otu_pa_df)) %>%
+  pivot_longer(
+    cols = -OTU_ID,
+    names_to = "Sample_ID",
+    values_to = "presence"
+  ) %>%
+  filter(presence == 1) %>%
+  select(-presence)
+
+# Join metadata, pattern, and guild info
+expanded <- otu_long %>%
+  left_join(metadata, by = "Sample_ID") %>%
+  left_join(presence_df %>% select(OTU_ID, pattern), by = "OTU_ID") %>%
+  left_join(guild %>% select(OTU_ID, primary_lifestyle), by = "OTU_ID") %>%
+  select(
+    OTU_ID,
+    pattern,
+    Sample_ID,
+    Species,
+    Site,
+    Month,
+    primary_lifestyle
+  )
+
+# ---------------------------
+# STEP 4b: Create summary table
+# ---------------------------
+
+summary_tbl <- presence_df %>%
+  select(OTU_ID, pattern) %>%
+  left_join(guild %>% select(OTU_ID, primary_lifestyle), by = "OTU_ID")
+
+# ---------------------------
+# STEP 5: Write outputs to CSV
+# ---------------------------
+
+write_csv(
+  expanded,
+  "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Taxonomy_Guild_Analyses/September_Spike/Presence_Absence/OTU_Temporal_Patterns_Expanded.csv"
+)
+
+write_csv(
+  summary_tbl,
+  "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Taxonomy_Guild_Analyses/September_Spike/Presence_Absence/OTU_Temporal_Patterns_Summary.csv"
+)
+
+# End of script
+
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+
+# File path
+input_path = "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Taxonomy_Guild_Analyses/September_Spike/Presence_Absence/OTU_Temporal_Patterns_Expanded.csv"
+output_dir = "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/Taxonomy_Guild_Analyses/September_Spike/Presence_Absence/Guild_Turnover_Plots"
+os.makedirs(output_dir, exist_ok=True)
+
+# Load data
+df = pd.read_csv(input_path)
+
+# Merge saprotrophs into a single category
+saprotrophs = ['wood_saprotroph', 'litter_saprotroph', 'unspecified_saprotroph']
+df['Guild'] = df['primary_lifestyle'].replace({g: 'Saprotroph' for g in saprotrophs})
+df['Guild'] = df['Guild'].fillna('Other')
+
+# Filter to saprotrophs and plant pathogens only
+df = df[df['Guild'].isin(['Saprotroph', 'plant_pathogen'])]
+
+# Re-bin patterns into time bins
+def simplify_pattern(p):
+    if p in ['Early Only', 'Declining']:
+        return 'May/July'
+    elif p in ['Late Only', 'Increasing']:
+        return 'September'
+    elif p == 'Mid Only':
+        return 'July'
+    else:
+        return None
+
+df['Time_Bin'] = df['pattern'].apply(simplify_pattern)
+df = df[df['Time_Bin'].notnull()]
+
+# Define plotting groups
+groups = [
+    ("Q_douglasii", "Ridge"),
+    ("Q_douglasii", "Valley"),
+    ("Q_wislizeni", "Ridge"),
+    ("Q_wislizeni", "Valley")
+]
+
+# Plot each group
+for species, site in groups:
+    subset = df[(df['Species'] == species) & (df['Site'] == site)]
+    summary = subset.groupby(['Time_Bin', 'Guild'])['OTU_ID'].nunique().reset_index(name='OTU_Count')
+
+    # Order time bins
+    time_order = ['May/July', 'July', 'September']
+    summary['Time_Bin'] = pd.Categorical(summary['Time_Bin'], categories=time_order, ordered=True)
+    summary = summary.sort_values('Time_Bin')
+
+    # Plot
+    plt.figure(figsize=(8, 6))
+    sns.lineplot(
+        data=summary,
+        x='Time_Bin',
+        y='OTU_Count',
+        hue='Guild',
+        marker='o',
+        linewidth=2.5,
+        palette={'plant_pathogen': 'red', 'Saprotroph': 'blue'}
+    )
+    plt.title(f"Guild Turnover – {species} / {site}")
+    plt.ylabel("Number of OTUs")
+    plt.xlabel("Time Bin")
+    plt.grid(False)
+    plt.tight_layout()
+
+    # Save plot
+    safe_species = species.replace(" ", "_")
+    filename = f"Guild_Turnover_{safe_species}_{site}.svg"
+    plt.savefig(os.path.join(output_dir, filename))
+    plt.close()
+    print(f"Saved: {filename}")
