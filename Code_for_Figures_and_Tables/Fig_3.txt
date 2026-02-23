@@ -212,3 +212,144 @@ results_df <- results_df[, c("Term", "Df", "SumOfSqs", "R2", "F", "Pr(>F)")]
 write.csv(results_df, output_path, row.names = FALSE)
 cat("PERMANOVA (TreeID only) results exported to:", output_path, "\n")
 
+
+
+
+#### VARPART run for Oak Endophytes revision ##### 
+
+```{r}
+# ============================================================================
+# varpart_analysis.R
+# Purpose: Partition variance in fungal endophyte community composition among
+#          Species, Site, and Month using distance-based redundancy analysis.
+#          Complements the PERMANOVA (adonis2) results by separating unique
+#          and shared variance fractions for each factor.
+# Inputs:  RA_otu_table.csv (relative abundance OTU table, OTUs as rows, samples as cols)
+#          metadata.csv (sample metadata with Species, Site, Month, TreeID)
+# Logic:   Uses vegan::varpart() with Bray-Curtis dissimilarities via capscale
+#          (db-RDA) to partition variance into unique and shared components
+#          for three explanatory variable sets: Species, Site, and Month.
+# ============================================================================
+
+library(vegan)
+
+# ---------------------------
+# Set file paths (EDIT THESE)
+# ---------------------------
+otu_table_path <- "/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/RA_otu_table.csv"
+metadata_path  <- "/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/metadata.csv"
+output_dir     <- "/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/Varpart"
+
+# ---------------------------
+# Load and align data
+# ---------------------------
+
+# Load OTU table (OTUs as rows, samples as columns)
+otu_table <- read.csv(otu_table_path, row.names = 1)
+
+# Load metadata
+metadata <- read.csv(metadata_path)
+
+# Standardize Sample_IDs to match OTU table column names (hyphens to dots)
+metadata$Sample_ID <- gsub("-", ".", metadata$Sample_ID)
+
+# Subset metadata to only samples present in OTU table
+metadata <- metadata[metadata$Sample_ID %in% colnames(otu_table), ]
+
+# Order metadata to match OTU table column order
+metadata <- metadata[match(colnames(otu_table), metadata$Sample_ID), ]
+
+# Subset OTU table to only samples present in metadata
+shared_samples <- intersect(colnames(otu_table), metadata$Sample_ID)
+otu_table <- otu_table[, shared_samples]
+metadata <- metadata[match(shared_samples, metadata$Sample_ID), ]
+
+# Verify alignment
+stopifnot(all(metadata$Sample_ID == colnames(otu_table)))
+
+# Transpose OTU table so samples are rows (required by vegan)
+otu_t <- as.data.frame(t(otu_table))
+
+# ---------------------------
+# Compute Bray-Curtis distance matrix
+# ---------------------------
+bray_curtis <- vegdist(otu_t, method = "bray")
+
+# ---------------------------
+# Create explanatory variable matrices
+# ---------------------------
+# varpart needs each predictor set as a separate data frame or matrix
+# For categorical variables, we pass them as factors in data frames
+
+species_df <- data.frame(Species = factor(metadata$Species))
+site_df    <- data.frame(Site = factor(metadata$Site))
+month_df   <- data.frame(Month = factor(metadata$Month))
+
+# ---------------------------
+# Run variance partitioning
+# ---------------------------
+# varpart with a distance matrix uses db-RDA (capscale) internally
+# Three explanatory tables: Species, Site, Month
+vp <- varpart(bray_curtis, species_df, site_df, month_df)
+
+# Print full results to console
+cat("\n========================================\n")
+cat("Variance Partitioning Results\n")
+cat("========================================\n\n")
+print(vp)
+
+# ---------------------------
+# Extract and export results table
+# ---------------------------
+frac_labels <- c(
+  "[a] Species alone",
+  "[b] Site alone",
+  "[c] Month alone",
+  "[d] Species + Site shared",
+  "[e] Species + Month shared",
+  "[f] Site + Month shared",
+  "[g] All three shared",
+  "Residual"
+)
+
+results_table <- data.frame(
+  Fraction    = frac_labels,
+  Adj.R.sq    = round(frac_table$Adj.R.square, 4),
+  Testable    = frac_table$Testable
+)
+
+print(results_table, row.names = FALSE)
+
+write.csv(results_table, file.path(output_dir, "varpart_results.csv"), row.names = FALSE)
+
+
+
+
+
+# ---------------------------
+# Test significance of unique fractions
+# ---------------------------
+# Each testable fraction can be tested with anova.cca on the corresponding
+# partial db-RDA model. This tests whether each factor explains significant
+# variance after controlling for the other two.
+
+cat("\n--- Unique Species (controlling for Site + Month) ---\n")
+dbrda_species <- dbrda(bray_curtis ~ Species + Condition(Site) + Condition(Month), 
+                       data = data.frame(Species = species_df$Species, 
+                                         Site = site_df$Site, 
+                                         Month = month_df$Month))
+anova(dbrda_species, permutations = 999)
+
+cat("\n--- Unique Site (controlling for Species + Month) ---\n")
+dbrda_site <- dbrda(bray_curtis ~ Site + Condition(Species) + Condition(Month), 
+                    data = data.frame(Species = species_df$Species, 
+                                      Site = site_df$Site, 
+                                      Month = month_df$Month))
+anova(dbrda_site, permutations = 999)
+
+cat("\n--- Unique Month (controlling for Species + Site) ---\n")
+dbrda_month <- dbrda(bray_curtis ~ Month + Condition(Species) + Condition(Site), 
+                     data = data.frame(Species = species_df$Species, 
+                                       Site = site_df$Site, 
+                                       Month = month_df$Month))
+anova(dbrda_month, permutations = 999)
