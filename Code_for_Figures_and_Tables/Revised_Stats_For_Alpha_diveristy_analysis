@@ -1,0 +1,161 @@
+
+### REVISION FOR REVIEWER #2 COMMENT 4: 
+```{r}
+# =============================================================================
+# Revised Alpha Diversity Analysis - Response to Reviewer Comment 4
+# Two LMM approach:
+#   Model 1: Both species, May and September only, full factorial fixed effects
+#   Model 2: Interior live oak only, all three months, Month + Site as fixed effects
+# =============================================================================
+
+library(vegan)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(dplyr)
+library(readr)
+
+# -----------------------------------------------------------------------------
+# 1. Load data
+# -----------------------------------------------------------------------------
+otu_raw <- read_csv("/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/revised_stats_for_reviews/otu_table_raw.csv")
+metadata <- read_csv("/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/revised_stats_for_reviews/metadata.csv")
+
+# Set sample IDs as rownames for OTU table
+otu_mat <- as.data.frame(otu_raw)
+rownames(otu_mat) <- otu_mat[[1]]
+otu_mat <- otu_mat[, -1]
+
+# Transpose so samples are rows, OTUs are columns
+otu_t <- t(otu_mat)
+
+# -----------------------------------------------------------------------------
+# 2. Compute Simpson diversity
+# -----------------------------------------------------------------------------
+# Convert to relative abundance per sample then compute Simpson's 1-D
+otu_rel <- otu_t / rowSums(otu_t)
+simpson_vals <- diversity(otu_rel, index = "simpson")
+
+simpson_df <- data.frame(
+  SampleID = names(simpson_vals),
+  Simpson   = as.numeric(simpson_vals)
+)
+
+# -----------------------------------------------------------------------------
+# 3. Merge with metadata
+# -----------------------------------------------------------------------------
+meta_df <- as.data.frame(metadata)
+colnames(meta_df)[1] <- "SampleID"
+
+df <- left_join(simpson_df, meta_df[, c("SampleID", "Species", "Site", "Month", "TreeID")],
+                by = "SampleID")
+
+# Set factor levels
+df$Month   <- factor(df$Month,   levels = c("May", "July", "September"))
+df$Species <- factor(df$Species, levels = c("Q_douglasii", "Q_wislizeni"))
+df$Site    <- factor(df$Site,    levels = c("Ridge", "Valley"))
+df$TreeID  <- factor(df$TreeID)
+
+cat("Full dataset sample counts by group:\n")
+print(table(df$Species, df$Site, df$Month))
+
+# -----------------------------------------------------------------------------
+# 4. MODEL 1: Both species, May and September only, full factorial LMM
+# -----------------------------------------------------------------------------
+# Drop July from both species
+df_model1 <- df %>% filter(Month != "July")
+df_model1$Month <- droplevels(df_model1$Month)
+
+cat("\nModel 1 sample counts (May + September, both species):\n")
+print(table(df_model1$Species, df_model1$Site, df_model1$Month))
+
+# Full factorial LMM: Species * Site * Month with TreeID as random intercept
+model1 <- lmer(Simpson ~ Species * Site * Month + (1 | TreeID),
+               data = df_model1,
+               REML = FALSE)
+
+cat("\n--- MODEL 1 SUMMARY ---\n")
+print(summary(model1))
+
+cat("\n--- MODEL 1 ANOVA (Type III) ---\n")
+anova_m1 <- anova(model1, type = 3)
+print(anova_m1)
+
+# Post-hoc pairwise comparisons
+cat("\n--- MODEL 1 EMMEANS: Species x Site x Month ---\n")
+emm1 <- emmeans(model1, ~ Species * Site * Month)
+pairs_m1 <- pairs(emm1, adjust = "tukey")
+print(pairs_m1)
+
+# Also extract main effect contrasts for cleaner reporting
+cat("\n--- MODEL 1 EMMEANS: Month contrast ---\n")
+emm1_month <- emmeans(model1, ~ Month)
+print(pairs(emm1_month, adjust = "tukey"))
+
+cat("\n--- MODEL 1 EMMEANS: Species contrast ---\n")
+emm1_species <- emmeans(model1, ~ Species)
+print(pairs(emm1_species, adjust = "tukey"))
+
+cat("\n--- MODEL 1 EMMEANS: Site contrast ---\n")
+emm1_site <- emmeans(model1, ~ Site)
+print(pairs(emm1_site, adjust = "tukey"))
+
+# -----------------------------------------------------------------------------
+# 5. MODEL 2: Interior live oak only, all three months
+# -----------------------------------------------------------------------------
+df_model2 <- df %>% filter(Species == "Q_wislizeni")
+df_model2$Month <- droplevels(df_model2$Month)
+
+cat("\nModel 2 sample counts (Interior live oak, all months):\n")
+print(table(df_model2$Site, df_model2$Month))
+
+# LMM: Month * Site with TreeID as random intercept
+model2 <- lmer(Simpson ~ Month * Site + (1 | TreeID),
+               data = df_model2,
+               REML = FALSE)
+
+cat("\n--- MODEL 2 SUMMARY ---\n")
+print(summary(model2))
+
+cat("\n--- MODEL 2 ANOVA (Type III) ---\n")
+anova_m2 <- anova(model2, type = 3)
+print(anova_m2)
+
+# Post-hoc pairwise comparisons
+cat("\n--- MODEL 2 EMMEANS: Month x Site ---\n")
+emm2 <- emmeans(model2, ~ Month * Site)
+pairs_m2 <- pairs(emm2, adjust = "tukey")
+print(pairs_m2)
+
+cat("\n--- MODEL 2 EMMEANS: Month contrast ---\n")
+emm2_month <- emmeans(model2, ~ Month)
+print(pairs(emm2_month, adjust = "tukey"))
+
+# -----------------------------------------------------------------------------
+# 6. Export results to CSV
+# -----------------------------------------------------------------------------
+outdir <- "/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/revised_stats_for_reviews"
+
+# Simpson diversity values with metadata
+write_csv(df, file.path(outdir, "simpson_diversity_all_samples.csv"))
+
+# Model 1 ANOVA table
+anova_m1_df <- as.data.frame(anova_m1)
+anova_m1_df$Term <- rownames(anova_m1_df)
+write_csv(anova_m1_df, file.path(outdir, "model1_anova_both_species_may_sep.csv"))
+
+# Model 1 emmeans full pairwise
+pairs_m1_df <- as.data.frame(pairs_m1)
+write_csv(pairs_m1_df, file.path(outdir, "model1_emmeans_pairwise.csv"))
+
+# Model 2 ANOVA table
+anova_m2_df <- as.data.frame(anova_m2)
+anova_m2_df$Term <- rownames(anova_m2_df)
+write_csv(anova_m2_df, file.path(outdir, "model2_anova_live_oak_all_months.csv"))
+
+# Model 2 emmeans full pairwise
+pairs_m2_df <- as.data.frame(pairs_m2)
+write_csv(pairs_m2_df, file.path(outdir, "model2_emmeans_pairwise.csv"))
+
+cat("\nAll results exported to:", outdir, "\n")
+```
