@@ -13,18 +13,18 @@ metadata_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/
 otu_table = pd.read_csv(otu_table_path, index_col=0)
 metadata = pd.read_csv(metadata_path)
 
-# Define Shannon diversity metric
-def shannon_diversity(otu_counts):
+# Define Simpson diversity metric
+def Simpson_diversity(otu_counts):
     proportions = otu_counts[otu_counts > 0] / otu_counts.sum()
     return -np.sum(proportions * np.log(proportions))
 
-# Calculate Shannon diversity for each sample
-shannon_diversity_values = {
-    sample: shannon_diversity(otu_table[sample]) for sample in otu_table.columns
+# Calculate Simpson diversity for each sample
+Simpson_diversity_values = {
+    sample: Simpson_diversity(otu_table[sample]) for sample in otu_table.columns
 }
 
-# Add Shannon diversity to metadata
-metadata["Shannon"] = metadata["Sample_ID"].map(shannon_diversity_values)
+# Add Simpson diversity to metadata
+metadata["Simpson"] = metadata["Sample_ID"].map(Simpson_diversity_values)
 
 # Map species names to common names
 species_mapping = {"Q_douglasii": "Blue Oak", "Q_wislizeni": "Interior Live Oak"}
@@ -45,7 +45,7 @@ for site in metadata["Site"].unique():
     ax = sns.boxplot(
         data=site_data,
         x="Month",
-        y="Shannon",
+        y="Simpson",
         hue="Species",
         dodge=True,
         palette=species_palette,
@@ -59,7 +59,7 @@ for site in metadata["Site"].unique():
     sns.stripplot(
         data=site_data,
         x="Month",
-        y="Shannon",
+        y="Simpson",
         hue="Species",
         palette=species_palette,
         dodge=True,
@@ -76,15 +76,15 @@ for site in metadata["Site"].unique():
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     
-    plt.title(f"Shannon Diversity by Month ({site} Site)")
+    plt.title(f"Simpson Diversity by Month ({site} Site)")
     plt.xlabel("Month")
-    plt.ylabel("Shannon Diversity")
+    plt.ylabel("Simpson Diversity")
     plt.legend(title="Species", loc="upper right")
     plt.tight_layout()
-    plt.savefig(f"shannon_diversity_{site.lower()}.svg", format="svg")
+    plt.savefig(f"Simpson_diversity_{site.lower()}.svg", format="svg")
     plt.show()
 
-print("Shannon diversity plots for Ridge and Valley sites generated and saved as SVG files.")
+print("Simpson diversity plots for Ridge and Valley sites generated and saved as SVG files.")
 
 
 ### KRUSKAL-WALLIS TEST
@@ -101,32 +101,32 @@ metadata_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project/Relative
 otu_table = pd.read_csv(otu_table_path, index_col=0)
 metadata = pd.read_csv(metadata_path)
 
-# Define Shannon diversity metric
-def shannon_diversity(otu_counts):
+# Define Simpson diversity metric
+def Simpson_diversity(otu_counts):
     proportions = otu_counts[otu_counts > 0] / otu_counts.sum()
     return -sum(proportions * np.log(proportions))
 
-# Calculate Shannon diversity for each sample
-shannon_diversity_values = {
-    sample: shannon_diversity(otu_table[sample]) for sample in otu_table.columns
+# Calculate Simpson diversity for each sample
+Simpson_diversity_values = {
+    sample: Simpson_diversity(otu_table[sample]) for sample in otu_table.columns
 }
 
-# Add Shannon diversity to metadata
-metadata["Shannon"] = metadata["Sample_ID"].map(shannon_diversity_values)
+# Add Simpson diversity to metadata
+metadata["Simpson"] = metadata["Sample_ID"].map(Simpson_diversity_values)
 
 # Debugging: Check for NaN values
-print(f"Number of NaN values in Shannon diversity: {metadata['Shannon'].isna().sum()}")
+print(f"Number of NaN values in Simpson diversity: {metadata['Simpson'].isna().sum()}")
 
 # Filter data for overall species comparison
-overall_species_data = metadata[['Species', 'Shannon']].dropna()  # Drop rows with NaN Shannon values
+overall_species_data = metadata[['Species', 'Simpson']].dropna()  # Drop rows with NaN Simpson values
 
 # Debugging: Check group sizes
-print("Valid Shannon diversity counts per species:")
-print(overall_species_data.groupby('Species')["Shannon"].count())
+print("Valid Simpson diversity counts per species:")
+print(overall_species_data.groupby('Species')["Simpson"].count())
 
 # Group data by species
 groups = [
-    overall_species_data[overall_species_data['Species'] == species]['Shannon'] 
+    overall_species_data[overall_species_data['Species'] == species]['Simpson'] 
     for species in overall_species_data['Species'].unique()
 ]
 
@@ -137,20 +137,20 @@ if all(len(group) > 0 for group in groups):
 
     # Output results
     result = {
-        "Metric": "Shannon",
+        "Metric": "Simpson",
         "Comparison": "Overall Species",
         "H_stat": h_stat,
         "p_value": p_value
     }
 
-    print("Kruskal-Wallis Test for Overall Species Comparison (Shannon Diversity):")
+    print("Kruskal-Wallis Test for Overall Species Comparison (Simpson Diversity):")
     print(f"H-statistic: {h_stat}, p-value: {p_value}")
 
     # Save results to a CSV file
     result_df = pd.DataFrame([result])
-    result_df.to_csv("overall_species_shannon_results.csv", index=False)
-    print("Results saved to overall_species_shannon_results.csv")
+    result_df.to_csv("overall_species_Simpson_results.csv", index=False)
+    print("Results saved to overall_species_Simpson_results.csv")
 else:
-    print("One or more groups have no valid Shannon diversity values. Test cannot proceed.")
+    print("One or more groups have no valid Simpson diversity values. Test cannot proceed.")
 
 
