@@ -15,7 +15,7 @@ metadata = pd.read_csv(metadata_path)
 def richness(otu_counts):
     return (otu_counts > 0).sum()
 
-def shannon_diversity(otu_counts):
+def Simpson_diversity(otu_counts):
     proportions = otu_counts[otu_counts > 0] / otu_counts.sum()
     return -np.sum(proportions * np.log(proportions))
 
@@ -24,12 +24,12 @@ def simpson_index(otu_counts):
     return 1 - np.sum(proportions ** 2)
 
 # Calculate metrics for each sample
-alpha_diversity = pd.DataFrame(index=otu_table.columns, columns=["Richness", "Shannon", "Simpson"])
+alpha_diversity = pd.DataFrame(index=otu_table.columns, columns=["Richness", "Simpson", "Simpson"])
 
 for sample in otu_table.columns:
     otu_counts = otu_table[sample]
     alpha_diversity.loc[sample, "Richness"] = richness(otu_counts)
-    alpha_diversity.loc[sample, "Shannon"] = shannon_diversity(otu_counts)
+    alpha_diversity.loc[sample, "Simpson"] = Simpson_diversity(otu_counts)
     alpha_diversity.loc[sample, "Simpson"] = simpson_index(otu_counts)
 
 # Merge with metadata
@@ -56,7 +56,7 @@ species_mapping = {"Q_douglasii": "Blue Oak", "Q_wislizeni": "Interior Live Oak"
 merged_data["Species"] = merged_data["Species"].map(species_mapping)
 
 # Metrics and groups
-metrics = ["Richness", "Shannon", "Simpson"]
+metrics = ["Richness", "Simpson", "Simpson"]
 group_vars = ["Species", "Site"]
 
 # Generate dot plots for alpha diversity metrics grouped by Species
@@ -130,7 +130,7 @@ metadata = pd.read_csv(metadata_path)
 def richness(otu_counts):
     return (otu_counts > 0).sum()
 
-def shannon_diversity(otu_counts):
+def Simpson_diversity(otu_counts):
     proportions = otu_counts[otu_counts > 0] / otu_counts.sum()
     return -np.sum(proportions * np.log(proportions))
 
@@ -139,19 +139,19 @@ def simpson_index(otu_counts):
     return 1 - np.sum(proportions ** 2)
 
 # Calculate metrics for each sample
-alpha_diversity = pd.DataFrame(index=otu_table.columns, columns=["Richness", "Shannon", "Simpson"])
+alpha_diversity = pd.DataFrame(index=otu_table.columns, columns=["Richness", "Simpson", "Simpson"])
 
 for sample in otu_table.columns:
     otu_counts = otu_table[sample]
     alpha_diversity.loc[sample, "Richness"] = richness(otu_counts)
-    alpha_diversity.loc[sample, "Shannon"] = shannon_diversity(otu_counts)
+    alpha_diversity.loc[sample, "Simpson"] = Simpson_diversity(otu_counts)
     alpha_diversity.loc[sample, "Simpson"] = simpson_index(otu_counts)
 
 # Merge with metadata
 alpha_diversity = alpha_diversity.reset_index().rename(columns={"index": "Sample_ID"})
 merged_data = pd.merge(alpha_diversity, metadata, on="Sample_ID")
 
-# Define comparisons and perform tests on Shannon diversity only
+# Define comparisons and perform tests on Simpson diversity only
 comparisons = [
     # Month comparisons for Q_wislizeni
     ("Month", {"Species": "Q_wislizeni", "Site": "Ridge"}),
@@ -184,7 +184,7 @@ comparisons = [
 
 results = []
 dunn_results = []
-metric = "Shannon"
+metric = "Simpson"
 
 # Perform Kruskal-Wallis tests for each comparison
 for group_col, filters in comparisons:
@@ -225,14 +225,14 @@ for group_col, filters in comparisons:
 
 # Save results to CSV
 results_df = pd.DataFrame(results)
-results_file = "kruskal_shannon_comparisons.csv"
+results_file = "kruskal_Simpson_comparisons.csv"
 results_df.to_csv(results_file, index=False)
-print(f"Custom Kruskal-Wallis results for Shannon diversity saved to {results_file}")
+print(f"Custom Kruskal-Wallis results for Simpson diversity saved to {results_file}")
 
 # Combine and save Dunn's test results
 if dunn_results:
     all_dunn_results = pd.concat(dunn_results, ignore_index=True)
-    dunn_results_file = "dunn_shannon_comparisons.csv"
+    dunn_results_file = "dunn_Simpson_comparisons.csv"
     all_dunn_results.to_csv(dunn_results_file, index=False)
     print(f"Dunn's test results saved to {dunn_results_file}")
 
