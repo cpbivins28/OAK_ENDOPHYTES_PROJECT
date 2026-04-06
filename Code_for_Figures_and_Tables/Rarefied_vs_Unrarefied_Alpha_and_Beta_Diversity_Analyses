@@ -1,0 +1,1303 @@
+### Create a rarefied OTU table, with a threshold of 1,100 reads per sample
+```{r}
+# Define input and output paths
+otu_path <- "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/NEW/otu_table_raw.csv"
+meta_path <- "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/NEW/metadata.csv"
+output_dir <- "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/NEW/rarefied_data"
+output_file <- file.path(output_dir, "otu_table_rarefied.csv")
+
+# -------------------------------
+# Step 1: Load and preprocess OTU table
+# -------------------------------
+otu_raw <- read.csv(otu_path, stringsAsFactors = FALSE)
+rownames(otu_raw) <- otu_raw$SampleID
+otu_raw <- otu_raw[, -1]  # Drop SampleID column
+
+# Harmonize sample names
+colnames(otu_raw) <- gsub("\\.", "-", colnames(otu_raw))
+
+# Transpose so rows are samples
+otu_raw_t <- as.data.frame(t(otu_raw))
+
+# -------------------------------
+# Step 2: Load and fix metadata
+# -------------------------------
+metadata <- read.csv(meta_path, stringsAsFactors = FALSE)
+
+# Fix known typo: "LOVE-" should be "LOV-"
+metadata$phinchID <- gsub("^LOVE-", "LOV-", metadata$phinchID)
+
+# Set Sample_ID and rownames properly
+metadata$Sample_ID <- metadata$phinchID
+rownames(metadata) <- metadata$Sample_ID
+
+# Subset metadata to match OTU table
+metadata <- metadata[rownames(otu_raw_t), ]
+
+# Confirm alignment
+stopifnot(identical(rownames(otu_raw_t), rownames(metadata)))  # Should return TRUE
+
+# -------------------------------
+# Step 3: Rarefy OTU Table
+# -------------------------------
+rarefaction_depth <- 1100
+set.seed(42)  # For reproducibility
+
+otu_rarefied <- rrarefy(otu_raw_t, sample = rarefaction_depth)
+
+# Drop samples that failed rarefaction (just in case)
+otu_rarefied_clean <- otu_rarefied[rowSums(otu_rarefied) > 0, ]
+metadata_clean <- metadata[rownames(otu_rarefied_clean), ]
+
+# Final alignment check
+stopifnot(identical(rownames(otu_rarefied_clean), rownames(metadata_clean)))
+
+# -------------------------------
+# Step 4: Export rarefied OTU table
+# -------------------------------
+write.csv(otu_rarefied_clean,
+          file = output_file,
+          quote = FALSE)
+
+cat("✅ Rarefied OTU table saved to:", output_file, "\n")
+```
+
+###########################
+### ANALYSES
+###########################
+
+
+### Data for Figure 1: Simpson Diversity LMMs and Post-hoc
+
+```{r}
+# Figure 1: Simpson Diversity LMMs and Post-hoc
+
+library(tidyverse)
+library(vegan)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+
+# Define file paths
+otu_path <- "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/NEW/otu_table_raw.csv"
+meta_path <- "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/NEW/metadata.csv"
+output_dir <- "/Users/cbivins/Desktop/Oak_Endophyte_Project_NEATEST/NEW"
+
+# ------------------------
+# Load and check metadata
+# ------------------------
+meta <- read.csv(meta_path, stringsAsFactors = FALSE)
+stopifnot("Sample_ID" %in% colnames(meta))
+
+# Load OTU table
+otu <- read.csv(otu_path, row.names = 1, check.names = FALSE)
+
+# Confirm matching samples
+shared_samples <- intersect(meta$Sample_ID, colnames(otu))
+otu <- otu[, shared_samples]
+meta <- meta[match(shared_samples, meta$Sample_ID), ]
+
+# ------------------------
+# Calculate Simpson diversity
+# ------------------------
+otu_t <- as.data.frame(t(otu))
+otu_t[] <- lapply(otu_t, as.numeric)
+
+meta$Simpson <- diversity(otu_t, index = "simpson")
+
+# Add Tree_ID column if not already present
+if (!"Tree_ID" %in% colnames(meta)) {
+  meta$Tree_ID <- gsub("([A-Z]+-\\d+)-.*", "\\1", meta$Sample_ID)
+}
+
+# Export per-sample Simpson values
+simpson_out <- meta %>%
+  select(Sample_ID, Tree_ID, Species, Site, Month, Simpson)
+
+write.csv(simpson_out, file.path(output_dir, "simpson_diversity_values.csv"), row.names = FALSE)
+
+# ------------------------
+# Run LMMs
+# ------------------------
+models <- list(
+  Species = lmer(Simpson ~ Species + (1 | Tree_ID), data = meta),
+  Month   = lmer(Simpson ~ Month + (1 | Tree_ID), data = meta),
+  Site    = lmer(Simpson ~ Site + (1 | Tree_ID), data = meta)
+)
+
+# Combine ANOVA results
+model_summaries <- lapply(models, function(m) {
+  anova(m, type = 3) %>%
+    as.data.frame() %>%
+    rownames_to_column("Effect")
+})
+
+model_df <- bind_rows(model_summaries, .id = "Model")
+write.csv(model_df, file.path(output_dir, "figure1_lmm_results.csv"), row.names = FALSE)
+
+# ------------------------
+# Post-hoc Tukey test for Month
+# ------------------------
+month_emm <- emmeans(models$Month, pairwise ~ Month, adjust = "tukey")
+tukey_df <- as.data.frame(month_emm$contrasts)
+write.csv(tukey_df, file.path(output_dir, "figure1_month_posthoc.csv"), row.names = FALSE)
+```
+
+
+
+
+### REVISION FOR REVIEWER #2 COMMENT 4: 
+```{r}
+# =============================================================================
+# Revised Alpha Diversity Analysis - Response to Reviewer Comment 4
+# Two LMM approach:
+#   Model 1: Both species, May and September only, full factorial fixed effects
+#   Model 2: Interior live oak only, all three months, Month + Site as fixed effects
+# =============================================================================
+
+library(vegan)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(dplyr)
+library(readr)
+
+# -----------------------------------------------------------------------------
+# 1. Load data
+# -----------------------------------------------------------------------------
+otu_raw <- read_csv("/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/revised_stats_for_reviews/otu_table_raw.csv")
+metadata <- read_csv("/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/revised_stats_for_reviews/metadata.csv")
+
+# Set sample IDs as rownames for OTU table
+otu_mat <- as.data.frame(otu_raw)
+rownames(otu_mat) <- otu_mat[[1]]
+otu_mat <- otu_mat[, -1]
+
+# Transpose so samples are rows, OTUs are columns
+otu_t <- t(otu_mat)
+
+# -----------------------------------------------------------------------------
+# 2. Compute Simpson diversity
+# -----------------------------------------------------------------------------
+# Convert to relative abundance per sample then compute Simpson's 1-D
+otu_rel <- otu_t / rowSums(otu_t)
+simpson_vals <- diversity(otu_rel, index = "simpson")
+
+simpson_df <- data.frame(
+  SampleID = names(simpson_vals),
+  Simpson   = as.numeric(simpson_vals)
+)
+
+# -----------------------------------------------------------------------------
+# 3. Merge with metadata
+# -----------------------------------------------------------------------------
+meta_df <- as.data.frame(metadata)
+colnames(meta_df)[1] <- "SampleID"
+
+df <- left_join(simpson_df, meta_df[, c("SampleID", "Species", "Site", "Month", "TreeID")],
+                by = "SampleID")
+
+# Set factor levels
+df$Month   <- factor(df$Month,   levels = c("May", "July", "September"))
+df$Species <- factor(df$Species, levels = c("Q_douglasii", "Q_wislizeni"))
+df$Site    <- factor(df$Site,    levels = c("Ridge", "Valley"))
+df$TreeID  <- factor(df$TreeID)
+
+cat("Full dataset sample counts by group:\n")
+print(table(df$Species, df$Site, df$Month))
+
+# -----------------------------------------------------------------------------
+# 4. MODEL 1: Both species, May and September only, full factorial LMM
+# -----------------------------------------------------------------------------
+# Drop July from both species
+df_model1 <- df %>% filter(Month != "July")
+df_model1$Month <- droplevels(df_model1$Month)
+
+cat("\nModel 1 sample counts (May + September, both species):\n")
+print(table(df_model1$Species, df_model1$Site, df_model1$Month))
+
+# Full factorial LMM: Species * Site * Month with TreeID as random intercept
+model1 <- lmer(Simpson ~ Species * Site * Month + (1 | TreeID),
+               data = df_model1,
+               REML = FALSE)
+
+cat("\n--- MODEL 1 SUMMARY ---\n")
+print(summary(model1))
+
+cat("\n--- MODEL 1 ANOVA (Type III) ---\n")
+anova_m1 <- anova(model1, type = 3)
+print(anova_m1)
+
+# Post-hoc pairwise comparisons
+cat("\n--- MODEL 1 EMMEANS: Species x Site x Month ---\n")
+emm1 <- emmeans(model1, ~ Species * Site * Month)
+pairs_m1 <- pairs(emm1, adjust = "tukey")
+print(pairs_m1)
+
+# Also extract main effect contrasts for cleaner reporting
+cat("\n--- MODEL 1 EMMEANS: Month contrast ---\n")
+emm1_month <- emmeans(model1, ~ Month)
+print(pairs(emm1_month, adjust = "tukey"))
+
+cat("\n--- MODEL 1 EMMEANS: Species contrast ---\n")
+emm1_species <- emmeans(model1, ~ Species)
+print(pairs(emm1_species, adjust = "tukey"))
+
+cat("\n--- MODEL 1 EMMEANS: Site contrast ---\n")
+emm1_site <- emmeans(model1, ~ Site)
+print(pairs(emm1_site, adjust = "tukey"))
+
+# -----------------------------------------------------------------------------
+# 5. MODEL 2: Interior live oak only, all three months
+# -----------------------------------------------------------------------------
+df_model2 <- df %>% filter(Species == "Q_wislizeni")
+df_model2$Month <- droplevels(df_model2$Month)
+
+cat("\nModel 2 sample counts (Interior live oak, all months):\n")
+print(table(df_model2$Site, df_model2$Month))
+
+# LMM: Month * Site with TreeID as random intercept
+model2 <- lmer(Simpson ~ Month * Site + (1 | TreeID),
+               data = df_model2,
+               REML = FALSE)
+
+cat("\n--- MODEL 2 SUMMARY ---\n")
+print(summary(model2))
+
+cat("\n--- MODEL 2 ANOVA (Type III) ---\n")
+anova_m2 <- anova(model2, type = 3)
+print(anova_m2)
+
+# Post-hoc pairwise comparisons
+cat("\n--- MODEL 2 EMMEANS: Month x Site ---\n")
+emm2 <- emmeans(model2, ~ Month * Site)
+pairs_m2 <- pairs(emm2, adjust = "tukey")
+print(pairs_m2)
+
+cat("\n--- MODEL 2 EMMEANS: Month contrast ---\n")
+emm2_month <- emmeans(model2, ~ Month)
+print(pairs(emm2_month, adjust = "tukey"))
+
+# -----------------------------------------------------------------------------
+# 6. Export results to CSV
+# -----------------------------------------------------------------------------
+outdir <- "/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/revised_stats_for_reviews"
+
+# Simpson diversity values with metadata
+write_csv(df, file.path(outdir, "simpson_diversity_all_samples.csv"))
+
+# Model 1 ANOVA table
+anova_m1_df <- as.data.frame(anova_m1)
+anova_m1_df$Term <- rownames(anova_m1_df)
+write_csv(anova_m1_df, file.path(outdir, "model1_anova_both_species_may_sep.csv"))
+
+# Model 1 emmeans full pairwise
+pairs_m1_df <- as.data.frame(pairs_m1)
+write_csv(pairs_m1_df, file.path(outdir, "model1_emmeans_pairwise.csv"))
+
+# Model 2 ANOVA table
+anova_m2_df <- as.data.frame(anova_m2)
+anova_m2_df$Term <- rownames(anova_m2_df)
+write_csv(anova_m2_df, file.path(outdir, "model2_anova_live_oak_all_months.csv"))
+
+# Model 2 emmeans full pairwise
+pairs_m2_df <- as.data.frame(pairs_m2)
+write_csv(pairs_m2_df, file.path(outdir, "model2_emmeans_pairwise.csv"))
+
+cat("\nAll results exported to:", outdir, "\n")
+```
+
+
+
+### Redo Alpha Diversity analysis with rarefied OTU table to compare results using rarefied vs unrarefied data
+```{r}
+# =============================================================================
+# rarefied_alpha_diversity_analysis.R
+#
+# Purpose:
+#   Re-run the revised alpha diversity analysis using the rarefied OTU table
+#   (1,100 reads per sample) as a sensitivity analysis for reviewer comments
+#   about sequencing depth handling.
+#
+# Inputs:
+#   - /Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/revised_stats_for_reviews/rarefied/otu_table_rarefied.csv
+#   - /Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/revised_stats_for_reviews/rarefied/metadata.csv
+#
+# Logic:
+#   1. Load the rarefied OTU table and metadata.
+#   2. Convert the rarefied raw-count OTU table to per-sample relative abundance.
+#   3. Calculate Simpson diversity for each sample.
+#   4. Re-run the exact same two LMMs used in the revised original analysis:
+#        - Model 1: both species, May + September only
+#        - Model 2: interior live oak only, all three months
+#   5. Export per-sample Simpson values, ANOVA tables, and emmeans contrasts.
+#
+# Outputs:
+#   All output files are written to:
+#   /Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/revised_stats_for_reviews/rarefied
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 0. Load required packages
+# -----------------------------------------------------------------------------
+
+# Load ecological diversity functions
+library(vegan)
+
+# Load mixed model packages
+library(lme4)
+library(lmerTest)
+
+# Load post-hoc comparison package
+library(emmeans)
+
+# Load wrangling and import/export packages
+library(dplyr)
+library(readr)
+library(tibble)
+
+# -----------------------------------------------------------------------------
+# 1. Define file paths
+# -----------------------------------------------------------------------------
+
+# Define the path to the rarefied OTU table
+otu_path <- "/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/revised_stats_for_reviews/rarefied/otu_table_rarefied.csv"
+
+# Define the path to the rarefied metadata table
+meta_path <- "/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/revised_stats_for_reviews/rarefied/metadata.csv"
+
+# Define the output directory
+outdir <- "/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/revised_stats_for_reviews/rarefied"
+
+# -----------------------------------------------------------------------------
+# 2. Load input files
+# -----------------------------------------------------------------------------
+
+# Read the rarefied OTU table
+otu_raw <- read_csv(otu_path, show_col_types = FALSE)
+
+# Read the metadata table
+metadata <- read_csv(meta_path, show_col_types = FALSE)
+
+# -----------------------------------------------------------------------------
+# 3. Prepare OTU table
+# -----------------------------------------------------------------------------
+
+# Convert imported OTU table to a regular data frame for flexible handling
+otu_mat <- as.data.frame(otu_raw)
+
+# Use the first column as OTU IDs
+rownames(otu_mat) <- otu_mat[[1]]
+
+# Remove the first column now that it has been moved to row names
+otu_mat <- otu_mat[, -1, drop = FALSE]
+
+# Transpose the OTU table so that rows are samples and columns are OTUs
+otu_t <- t(otu_mat)
+
+# Convert the transposed object back to a data frame
+otu_t <- as.data.frame(otu_t)
+
+# Force all OTU values to numeric
+otu_t[] <- lapply(otu_t, as.numeric)
+
+# -----------------------------------------------------------------------------
+# 4. Prepare metadata
+# -----------------------------------------------------------------------------
+
+# Convert metadata to a regular data frame
+meta_df <- as.data.frame(metadata)
+
+# Rename the first column to SampleID if needed
+# This preserves compatibility with the earlier analysis script structure.
+colnames(meta_df)[1] <- "SampleID"
+
+# Check that required columns exist
+required_meta_cols <- c("SampleID", "Species", "Site", "Month", "TreeID")
+missing_meta_cols <- setdiff(required_meta_cols, colnames(meta_df))
+
+# Stop immediately if required metadata columns are missing
+if (length(missing_meta_cols) > 0) {
+  stop(
+    paste(
+      "Metadata file is missing required columns:",
+      paste(missing_meta_cols, collapse = ", ")
+    )
+  )
+}
+
+# -----------------------------------------------------------------------------
+# 5. Match OTU table and metadata
+# -----------------------------------------------------------------------------
+
+# Store sample IDs from the OTU table
+otu_sample_ids <- rownames(otu_t)
+
+# Keep only metadata rows whose SampleID appears in the OTU table
+meta_df <- meta_df %>%
+  filter(SampleID %in% otu_sample_ids)
+
+# Reorder metadata to match OTU table row order exactly
+meta_df <- meta_df[match(otu_sample_ids, meta_df$SampleID), , drop = FALSE]
+
+# Confirm that ordering now matches
+if (!identical(rownames(otu_t), meta_df$SampleID)) {
+  stop("Sample ordering mismatch between OTU table and metadata after alignment.")
+}
+
+# -----------------------------------------------------------------------------
+# 6. Convert rarefied counts to relative abundance
+# -----------------------------------------------------------------------------
+
+# Calculate row sums for each sample
+sample_totals <- rowSums(otu_t)
+
+# Stop if any samples have zero total counts
+if (any(sample_totals == 0)) {
+  zero_samples <- rownames(otu_t)[sample_totals == 0]
+  stop(
+    paste(
+      "The following samples have zero total counts after rarefaction:",
+      paste(zero_samples, collapse = ", ")
+    )
+  )
+}
+
+# Convert each sample to relative abundance
+otu_rel <- otu_t / sample_totals
+
+# -----------------------------------------------------------------------------
+# 7. Calculate Simpson diversity
+# -----------------------------------------------------------------------------
+
+# Compute Simpson diversity from relative abundance data
+simpson_vals <- diversity(otu_rel, index = "simpson")
+
+# Store Simpson values in a clean data frame
+simpson_df <- data.frame(
+  SampleID = names(simpson_vals),
+  Simpson  = as.numeric(simpson_vals),
+  stringsAsFactors = FALSE
+)
+
+# -----------------------------------------------------------------------------
+# 8. Merge Simpson values with metadata
+# -----------------------------------------------------------------------------
+
+# Join Simpson values to metadata
+df <- left_join(
+  simpson_df,
+  meta_df[, c("SampleID", "Species", "Site", "Month", "TreeID")],
+  by = "SampleID"
+)
+
+# Check for failed joins
+if (any(is.na(df$Species)) || any(is.na(df$Site)) || any(is.na(df$Month)) || any(is.na(df$TreeID))) {
+  stop("Metadata join failed for one or more samples. Check SampleID consistency.")
+}
+
+# Set factor levels to match the original revised analysis
+df$Month   <- factor(df$Month, levels = c("May", "July", "September"))
+df$Species <- factor(df$Species, levels = c("Q_douglasii", "Q_wislizeni"))
+df$Site    <- factor(df$Site, levels = c("Ridge", "Valley"))
+df$TreeID  <- factor(df$TreeID)
+
+# -----------------------------------------------------------------------------
+# 9. Export per-sample Simpson diversity values
+# -----------------------------------------------------------------------------
+
+# Write out the full per-sample Simpson table
+write_csv(df, file.path(outdir, "simpson_diversity_rarefied.csv"))
+
+# Print group counts for tracking
+cat("\n============================================================\n")
+cat("Full dataset sample counts by Species x Site x Month\n")
+cat("============================================================\n")
+print(table(df$Species, df$Site, df$Month))
+
+# -----------------------------------------------------------------------------
+# 10. Model 1: Both species, May + September only
+# -----------------------------------------------------------------------------
+
+# Filter out July for the cross-species model
+df_model1 <- df %>%
+  filter(Month != "July")
+
+# Drop the unused July factor level
+df_model1$Month <- droplevels(df_model1$Month)
+
+# Print counts for Model 1
+cat("\n============================================================\n")
+cat("Model 1 sample counts: both species, May + September only\n")
+cat("============================================================\n")
+print(table(df_model1$Species, df_model1$Site, df_model1$Month))
+
+# Fit the full factorial LMM with TreeID as a random intercept
+model1 <- lmer(
+  Simpson ~ Species * Site * Month + (1 | TreeID),
+  data = df_model1,
+  REML = FALSE
+)
+
+# Print a standard summary
+cat("\n============================================================\n")
+cat("MODEL 1 SUMMARY\n")
+cat("============================================================\n")
+print(summary(model1))
+
+# Run Type III ANOVA for Model 1
+cat("\n============================================================\n")
+cat("MODEL 1 TYPE III ANOVA\n")
+cat("============================================================\n")
+anova_m1 <- anova(model1, type = 3)
+print(anova_m1)
+
+# Calculate emmeans across all Species x Site x Month combinations
+cat("\n============================================================\n")
+cat("MODEL 1 EMMEANS: Species x Site x Month\n")
+cat("============================================================\n")
+emm1 <- emmeans(model1, ~ Species * Site * Month)
+
+# Calculate Tukey-adjusted pairwise comparisons across all combinations
+pairs_m1 <- pairs(emm1, adjust = "tukey")
+print(pairs_m1)
+
+# Also compute simpler main-effect contrasts for quick comparison if desired
+cat("\n============================================================\n")
+cat("MODEL 1 EMMEANS: Month contrast\n")
+cat("============================================================\n")
+emm1_month <- emmeans(model1, ~ Month)
+pairs_m1_month <- pairs(emm1_month, adjust = "tukey")
+print(pairs_m1_month)
+
+cat("\n============================================================\n")
+cat("MODEL 1 EMMEANS: Species contrast\n")
+cat("============================================================\n")
+emm1_species <- emmeans(model1, ~ Species)
+pairs_m1_species <- pairs(emm1_species, adjust = "tukey")
+print(pairs_m1_species)
+
+cat("\n============================================================\n")
+cat("MODEL 1 EMMEANS: Site contrast\n")
+cat("============================================================\n")
+emm1_site <- emmeans(model1, ~ Site)
+pairs_m1_site <- pairs(emm1_site, adjust = "tukey")
+print(pairs_m1_site)
+
+# -----------------------------------------------------------------------------
+# 11. Model 2: Interior live oak only, all three months
+# -----------------------------------------------------------------------------
+
+# Keep only interior live oak samples
+df_model2 <- df %>%
+  filter(Species == "Q_wislizeni")
+
+# Drop unused factor levels
+df_model2$Month <- droplevels(df_model2$Month)
+df_model2$Species <- droplevels(df_model2$Species)
+
+# Print counts for Model 2
+cat("\n============================================================\n")
+cat("Model 2 sample counts: interior live oak only, all months\n")
+cat("============================================================\n")
+print(table(df_model2$Site, df_model2$Month))
+
+# Fit the Month x Site LMM with TreeID as a random intercept
+model2 <- lmer(
+  Simpson ~ Month * Site + (1 | TreeID),
+  data = df_model2,
+  REML = FALSE
+)
+
+# Print a standard summary
+cat("\n============================================================\n")
+cat("MODEL 2 SUMMARY\n")
+cat("============================================================\n")
+print(summary(model2))
+
+# Run Type III ANOVA for Model 2
+cat("\n============================================================\n")
+cat("MODEL 2 TYPE III ANOVA\n")
+cat("============================================================\n")
+anova_m2 <- anova(model2, type = 3)
+print(anova_m2)
+
+# Calculate emmeans across Month x Site combinations
+cat("\n============================================================\n")
+cat("MODEL 2 EMMEANS: Month x Site\n")
+cat("============================================================\n")
+emm2 <- emmeans(model2, ~ Month * Site)
+
+# Calculate Tukey-adjusted pairwise comparisons
+pairs_m2 <- pairs(emm2, adjust = "tukey")
+print(pairs_m2)
+
+# Also compute month-only contrasts for quick comparison if desired
+cat("\n============================================================\n")
+cat("MODEL 2 EMMEANS: Month contrast\n")
+cat("============================================================\n")
+emm2_month <- emmeans(model2, ~ Month)
+pairs_m2_month <- pairs(emm2_month, adjust = "tukey")
+print(pairs_m2_month)
+
+# -----------------------------------------------------------------------------
+# 12. Export model outputs
+# -----------------------------------------------------------------------------
+
+# Convert Model 1 ANOVA table to a data frame and retain term names
+anova_m1_df <- as.data.frame(anova_m1)
+anova_m1_df$Term <- rownames(anova_m1_df)
+
+# Write Model 1 ANOVA table
+write_csv(anova_m1_df, file.path(outdir, "model1_anova_rarefied.csv"))
+
+# Write full Model 1 pairwise emmeans results
+write_csv(as.data.frame(pairs_m1), file.path(outdir, "model1_emmeans_rarefied.csv"))
+
+# Write optional simplified Model 1 contrast outputs
+write_csv(as.data.frame(pairs_m1_month), file.path(outdir, "model1_month_contrast_rarefied.csv"))
+write_csv(as.data.frame(pairs_m1_species), file.path(outdir, "model1_species_contrast_rarefied.csv"))
+write_csv(as.data.frame(pairs_m1_site), file.path(outdir, "model1_site_contrast_rarefied.csv"))
+
+# Convert Model 2 ANOVA table to a data frame and retain term names
+anova_m2_df <- as.data.frame(anova_m2)
+anova_m2_df$Term <- rownames(anova_m2_df)
+
+# Write Model 2 ANOVA table
+write_csv(anova_m2_df, file.path(outdir, "model2_anova_rarefied.csv"))
+
+# Write full Model 2 pairwise emmeans results
+write_csv(as.data.frame(pairs_m2), file.path(outdir, "model2_emmeans_rarefied.csv"))
+
+# Write optional simplified Model 2 month contrast output
+write_csv(as.data.frame(pairs_m2_month), file.path(outdir, "model2_month_contrast_rarefied.csv"))
+
+# -----------------------------------------------------------------------------
+# 13. Export model-ready datasets for transparency
+# -----------------------------------------------------------------------------
+
+# Export the full merged data frame used to calculate Simpson values
+write_csv(df, file.path(outdir, "model_input_all_samples_rarefied.csv"))
+
+# Export the model-specific subsets
+write_csv(df_model1, file.path(outdir, "model1_input_rarefied.csv"))
+write_csv(df_model2, file.path(outdir, "model2_input_rarefied.csv"))
+
+# -----------------------------------------------------------------------------
+# 14. Final confirmation
+# -----------------------------------------------------------------------------
+
+cat("\n============================================================\n")
+cat("Rarefied alpha diversity analysis complete.\n")
+cat("All output files were written to:\n")
+cat(outdir, "\n")
+cat("============================================================\n")
+```{r}
+
+
+#### Orignal Beta Diversity Analysis (unrarefied)
+```{r}
+import pandas as pd
+import numpy as np
+from scipy.spatial.distance import pdist, squareform
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+
+# File paths
+otu_table_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path = "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+
+# Load data
+otu_table = pd.read_csv(otu_table_path, index_col=0)
+metadata = pd.read_csv(metadata_path)
+
+# Align metadata with OTU table
+metadata = metadata[metadata["Sample_ID"].isin(otu_table.columns)].set_index("Sample_ID")
+
+# Transpose OTU table for distance calculation (samples as rows)
+otu_table_transposed = otu_table.T
+
+# Compute Bray-Curtis distance matrix
+bray_curtis_distances = pdist(otu_table_transposed, metric="braycurtis")
+bray_curtis_matrix = squareform(bray_curtis_distances)
+
+# Save Bray-Curtis distance matrix
+pd.DataFrame(bray_curtis_matrix, index=otu_table_transposed.index, columns=otu_table_transposed.index).to_csv("bray_curtis_distance_matrix.csv")
+
+# Principal Coordinates Analysis (PCoA)
+pcoa = PCA(n_components=3)
+pcoa_result = pcoa.fit_transform(bray_curtis_matrix)
+variance_explained = pcoa.explained_variance_ratio_ * 100
+
+# Save PCoA results
+pcoa_df = pd.DataFrame(pcoa_result, columns=["Axis 1", "Axis 2", "Axis 3"], index=otu_table_transposed.index)
+pcoa_df.to_csv("pcoa_results.csv")
+
+# Define color palettes
+species_palette = {"Q_douglasii": "#88CCEE", "Q_wislizeni": "#44AA99"}
+month_palette = {"May": "#E69F00", "July": "#56B4E9", "September": "#009E73"}
+site_palette = {"Ridge": "#D55E00", "Valley": "#0072B2"}
+
+# Function to plot PCoA with legends
+def plot_pcoa(color_by, palette, filename):
+    plt.figure(figsize=(10, 8))
+    unique_labels = metadata[color_by].unique()
+    handles = []
+    
+    for sample in pcoa_df.index:
+        if sample in metadata.index:
+            color = palette[metadata.loc[sample, color_by]]
+            scatter = plt.scatter(
+                pcoa_df.loc[sample, "Axis 1"],
+                pcoa_df.loc[sample, "Axis 2"],
+                color=color, edgecolors='black', alpha=0.8, s=100
+            )
+            
+    for label in unique_labels:
+        handles.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=palette[label], markersize=10, label=label))
+    
+    plt.xlabel(f"PCoA Axis 1 ({variance_explained[0]:.2f}%)")
+    plt.ylabel(f"PCoA Axis 2 ({variance_explained[1]:.2f}%)")
+    plt.title(f"PCoA Plot Colored by {color_by}")
+    plt.legend(handles=handles, title=color_by)
+    plt.grid(False)
+    plt.savefig(filename, format="svg")
+    plt.show()
+
+# Generate and save plots
+plot_pcoa("Species", species_palette, "pcoa_species.svg")
+plot_pcoa("Month", month_palette, "pcoa_month.svg")
+plot_pcoa("Site", site_palette, "pcoa_site.svg")
+
+
+
+### PERMANOVA
+
+library(vegan)
+
+# File paths
+otu_table_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+
+
+# Load data
+otu_table <- read.csv(otu_table_path, row.names = 1)
+metadata <- read.csv(metadata_path)
+
+# Standardize Sample_IDs in metadata to match OTU table column names
+metadata$Sample_ID <- gsub("-", ".", metadata$Sample_ID)
+
+# Align metadata with OTU table
+metadata <- metadata[metadata$Sample_ID %in% colnames(otu_table), ]
+
+# Transpose OTU table for Bray-Curtis calculation
+otu_table_transposed <- t(otu_table)
+
+# Compute Bray-Curtis distance matrix
+bray_curtis <- vegdist(otu_table_transposed, method = "bray")
+
+# Define variable orders for PERMANOVA
+variable_orders <- list(
+  c("Site", "Species", "Month"),
+  c("Species", "Site", "Month"),
+  c("Month", "Site", "Species")
+)
+
+# Run PERMANOVA for each order and save results
+results <- list()
+for (order in variable_orders) {
+  formula <- as.formula(paste("bray_curtis ~", paste(order, collapse = " + ")))
+  results[[paste(order, collapse = " -> ")]] <- adonis2(formula, data = metadata, permutations = 999)
+}
+
+# Save PERMANOVA results to CSV
+results_df <- do.call(rbind, lapply(names(results), function(order) {
+  res <- results[[order]]
+  data.frame(Order = order, Source = rownames(res), res)
+}))
+
+write.csv(results_df, "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Bray-Curtis/Stats/permanova_results.csv", row.names = FALSE)
+
+# Print PERMANOVA results
+print(results_df)
+
+### PERMANOVA - INTERACTIONS
+
+# Load necessary libraries
+library(vegan)
+
+# File paths
+otu_table_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+
+# Load data
+otu_table <- read.csv(otu_table_path, row.names = 1)
+metadata <- read.csv(metadata_path)
+
+# Align metadata with OTU table
+metadata$Sample_ID <- gsub("-", ".", metadata$Sample_ID)
+metadata <- metadata[metadata$Sample_ID %in% colnames(otu_table), ]
+
+# Transpose OTU table for Bray-Curtis calculation
+otu_table_transposed <- t(otu_table)
+
+# Compute Bray-Curtis distance matrix
+bray_curtis <- vegdist(otu_table_transposed, method = "bray")
+
+# Define the PERMANOVA formula including interactions
+interaction_formula <- bray_curtis ~ Site * Species * Month
+
+# Run PERMANOVA including interactions
+interaction_permanova <- adonis2(interaction_formula, data = metadata, permutations = 999)
+
+# Print interaction PERMANOVA results
+print(interaction_permanova)
+
+# Save interaction PERMANOVA results to CSV
+interaction_results_df <- as.data.frame(interaction_permanova)
+write.csv(interaction_results_df, "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Bray-Curtis/Stats/interaction_permanova_results.csv")
+
+# Optional: Test specific interactions separately
+specific_interaction_formula <- bray_curtis ~ Site + Species + Month + Site:Species
+specific_interaction_permanova <- adonis2(specific_interaction_formula, data = metadata, permutations = 999)
+
+# Print specific interaction PERMANOVA results
+print(specific_interaction_permanova)
+
+# Save specific interaction PERMANOVA results to CSV
+specific_interaction_results_df <- as.data.frame(specific_interaction_permanova)
+write.csv(specific_interaction_results_df, "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Bray-Curtis/Stats/specific_interaction_permanova_results.csv")
+
+### PERMANOVA - TreeID
+
+# Load necessary library
+library(vegan)
+
+# File paths (adjust these as needed)
+otu_table_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/RA_otu_table.csv"
+metadata_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Abundance_CSV_Files/Relative_Abundance/metadata.csv"
+output_path <- "/Users/christopherbivins/Desktop/Oak_Endophyte_Project_NEATEST/Beta_Diversity_Analysis/Bray-Curtis/Stats/TreeID_permanova_results.csv"
+
+# Load data
+otu_table <- read.csv(otu_table_path, row.names = 1)
+metadata <- read.csv(metadata_path)
+
+# Adjust Sample_ID formatting if needed (to match column names in otu_table)
+metadata$Sample_ID <- gsub("-", ".", metadata$Sample_ID)
+metadata <- metadata[metadata$Sample_ID %in% colnames(otu_table), ]
+
+# Transpose OTU table for Bray-Curtis calculation
+otu_table_transposed <- t(otu_table)
+
+# Compute Bray-Curtis distance matrix
+bray_curtis <- vegdist(otu_table_transposed, method = "bray")
+
+# Define the PERMANOVA formula with TreeID only
+formula <- as.formula("bray_curtis ~ TreeID")
+
+# Run PERMANOVA
+treeid_permanova <- adonis2(formula, data = metadata, permutations = 999)
+
+# Convert results to a data frame
+results_df <- as.data.frame(treeid_permanova)
+
+# Add a column that holds the row names (e.g., "TreeID", "Residual", "Total")
+results_df$Term <- rownames(results_df)
+
+# Reorder columns so 'Term' appears first
+results_df <- results_df[, c("Term", "Df", "SumOfSqs", "R2", "F", "Pr(>F)")]
+
+# Save results to CSV (row.names = FALSE to avoid duplicate labeling)
+write.csv(results_df, output_path, row.names = FALSE)
+cat("PERMANOVA (TreeID only) results exported to:", output_path, "\n")
+
+```{r}
+
+
+#### Redo the above analysis but now using the rarefied OTU table
+```{r}
+# =============================================================================
+# rarefied_beta_diversity_analysis.R
+#
+# Purpose:
+#   Re-run the beta diversity analysis using the rarefied OTU table
+#   (1,100 reads per sample) as a sensitivity analysis for reviewer comments
+#   about sequencing depth handling.
+#
+# Inputs:
+#   - /Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/beta_diversity_revised/Rarefied/otu_table_rarefied.csv
+#   - /Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/beta_diversity_revised/Rarefied/metadata.csv
+#
+# Logic:
+#   1. Load rarefied OTU table and metadata.
+#   2. Convert rarefied counts to relative abundance per sample.
+#   3. Build:
+#        a. a fully sampled repeated-measures subset (all 3 months per TreeID)
+#        b. an all-samples dataset
+#   4. Compute Bray-Curtis dissimilarities from relative abundance data.
+#   5. Run:
+#        - additive PERMANOVA on fully sampled trees, with by = "terms"
+#        - interaction PERMANOVA on fully sampled trees, with by = "terms"
+#        - factorial PERMANOVA on all samples, with by = "terms"
+#        - betadisper tests for Species, Site, and Month in both datasets
+#   6. Export OTU tables, metadata, and all results.
+#
+# Outputs:
+#   /Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/beta_diversity_revised/Rarefied
+#
+# Important:
+#   - This script uses base R column subsetting throughout.
+#   - The rarefied OTU table is in raw counts, so it is converted to relative
+#     abundance before Bray-Curtis is calculated.
+#   - The additive PERMANOVA is run with by = "terms" so the output structure
+#     matches the original unrarefied file and can be directly compared.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 0. Load required packages
+# -----------------------------------------------------------------------------
+library(vegan)
+library(readr)
+
+# -----------------------------------------------------------------------------
+# 1. Define file paths
+# -----------------------------------------------------------------------------
+otu_path <- "/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/beta_diversity_revised/Rarefied/otu_table_rarefied.csv"
+meta_path <- "/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/beta_diversity_revised/Rarefied/metadata.csv"
+outdir   <- "/Users/cbivins/Desktop/Finished_Projects/Oak_Endophyte_Project_NEATEST/NEW/beta_diversity_revised/Rarefied"
+
+# -----------------------------------------------------------------------------
+# 2. Load input files
+# -----------------------------------------------------------------------------
+otu_raw <- read_csv(otu_path, show_col_types = FALSE)
+metadata <- read_csv(meta_path, show_col_types = FALSE)
+
+# -----------------------------------------------------------------------------
+# 3. Prepare OTU table
+# -----------------------------------------------------------------------------
+otu_mat <- as.data.frame(otu_raw)
+
+# First column is OTU ID
+rownames(otu_mat) <- otu_mat[[1]]
+otu_mat <- otu_mat[, -1, drop = FALSE]
+
+# Standardize sample names in OTU table to dots
+colnames(otu_mat) <- gsub("-", ".", colnames(otu_mat))
+
+# Transpose so rows = samples, cols = OTUs
+otu_t <- as.data.frame(t(otu_mat))
+otu_t[] <- lapply(otu_t, as.numeric)
+otu_t$Sample_ID <- rownames(otu_t)
+
+# -----------------------------------------------------------------------------
+# 4. Prepare metadata
+# -----------------------------------------------------------------------------
+# Drop unnamed first column if present
+if ("...1" %in% colnames(metadata)) {
+  metadata <- metadata[, colnames(metadata) != "...1", drop = FALSE]
+}
+
+# Make sure Sample_ID exists
+if (!"Sample_ID" %in% colnames(metadata)) {
+  stop("Metadata file does not contain a Sample_ID column.")
+}
+
+# Standardize Sample_ID to dots
+metadata$Sample_ID <- gsub("-", ".", metadata$Sample_ID)
+
+# Check required columns
+required_cols <- c("Sample_ID", "Species", "Site", "Month", "TreeID")
+missing_cols <- setdiff(required_cols, colnames(metadata))
+if (length(missing_cols) > 0) {
+  stop(
+    paste(
+      "Metadata is missing required columns:",
+      paste(missing_cols, collapse = ", ")
+    )
+  )
+}
+
+# Keep shared samples only
+shared_samples <- intersect(otu_t$Sample_ID, metadata$Sample_ID)
+
+otu_t <- otu_t[otu_t$Sample_ID %in% shared_samples, , drop = FALSE]
+metadata <- metadata[metadata$Sample_ID %in% shared_samples, , drop = FALSE]
+
+# Reorder metadata to match OTU table
+metadata <- metadata[match(otu_t$Sample_ID, metadata$Sample_ID), , drop = FALSE]
+
+# Confirm exact alignment
+stopifnot(identical(otu_t$Sample_ID, metadata$Sample_ID))
+
+# -----------------------------------------------------------------------------
+# 5. Convert rarefied counts to relative abundance
+# -----------------------------------------------------------------------------
+otu_only <- otu_t[, colnames(otu_t) != "Sample_ID", drop = FALSE]
+otu_only[] <- lapply(otu_only, as.numeric)
+
+sample_totals <- rowSums(otu_only)
+
+if (any(sample_totals == 0)) {
+  stop("One or more samples have zero total counts after rarefaction.")
+}
+
+otu_rel <- otu_only / sample_totals
+rownames(otu_rel) <- otu_t$Sample_ID
+
+# Export all-sample relative abundance OTU table
+otu_rel_export <- as.data.frame(t(otu_rel))
+write.csv(
+  otu_rel_export,
+  file = file.path(outdir, "otu_all_samples_rarefied_relative_abundance.csv"),
+  quote = FALSE
+)
+
+# Export aligned all-sample metadata
+write.csv(
+  metadata,
+  file = file.path(outdir, "metadata_all_samples_rarefied.csv"),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# -----------------------------------------------------------------------------
+# 6. Create fully sampled tree subset
+# -----------------------------------------------------------------------------
+tree_month_counts <- aggregate(
+  Month ~ TreeID,
+  data = metadata,
+  FUN = function(x) length(unique(x))
+)
+
+fully_sampled_tree_ids <- tree_month_counts$TreeID[tree_month_counts$Month == 3]
+
+metadata_full <- metadata[metadata$TreeID %in% fully_sampled_tree_ids, , drop = FALSE]
+otu_rel_full <- otu_rel[rownames(otu_rel) %in% metadata_full$Sample_ID, , drop = FALSE]
+
+# Reorder metadata_full to match OTU rows
+metadata_full <- metadata_full[match(rownames(otu_rel_full), metadata_full$Sample_ID), , drop = FALSE]
+
+# Confirm alignment
+stopifnot(identical(rownames(otu_rel_full), metadata_full$Sample_ID))
+
+# Export fully sampled relative abundance OTU table
+otu_rel_full_export <- as.data.frame(t(otu_rel_full))
+write.csv(
+  otu_rel_full_export,
+  file = file.path(outdir, "otu_fully_sampled_rarefied_relative_abundance.csv"),
+  quote = FALSE
+)
+
+# Export fully sampled metadata
+write.csv(
+  metadata_full,
+  file = file.path(outdir, "metadata_fully_sampled_rarefied.csv"),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# -----------------------------------------------------------------------------
+# 7. Fully sampled trees: additive repeated-measures PERMANOVA
+# -----------------------------------------------------------------------------
+bray_full <- vegdist(otu_rel_full, method = "bray")
+
+adonis_full <- adonis2(
+  bray_full ~ Species + Site + Month,
+  data = metadata_full,
+  permutations = 999,
+  strata = metadata_full$TreeID,
+  by = "terms"
+)
+
+adonis_full_df <- as.data.frame(adonis_full)
+adonis_full_df$Term <- rownames(adonis_full_df)
+adonis_full_df <- adonis_full_df[, c("Term", "Df", "SumOfSqs", "R2", "F", "Pr(>F)"), drop = FALSE]
+
+write.csv(
+  adonis_full_df,
+  file = file.path(outdir, "adonis_additive_species_site_month_BRAY_RA_rarefied.csv"),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# -----------------------------------------------------------------------------
+# 8. Fully sampled trees: interaction PERMANOVA
+# -----------------------------------------------------------------------------
+adonis_full_interaction <- adonis2(
+  bray_full ~ Species * Site * Month,
+  data = metadata_full,
+  permutations = 999,
+  strata = metadata_full$TreeID,
+  by = "terms"
+)
+
+adonis_full_interaction_df <- as.data.frame(adonis_full_interaction)
+adonis_full_interaction_df$Term <- rownames(adonis_full_interaction_df)
+adonis_full_interaction_df <- adonis_full_interaction_df[, c("Term", "Df", "SumOfSqs", "R2", "F", "Pr(>F)"), drop = FALSE]
+
+write.csv(
+  adonis_full_interaction_df,
+  file = file.path(outdir, "adonis_interaction_species_site_month_BRAY_RA_rarefied.csv"),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# -----------------------------------------------------------------------------
+# 9. Fully sampled trees: betadisper tests
+# -----------------------------------------------------------------------------
+# Species
+bd_species_full <- betadisper(bray_full, metadata_full$Species)
+anova_species_full <- as.data.frame(anova(bd_species_full))
+bd_species_full_df <- data.frame(
+  Term = rownames(anova_species_full),
+  anova_species_full,
+  row.names = NULL
+)
+write.csv(
+  bd_species_full_df,
+  file = file.path(outdir, "betadisper_species_BRAY_RA_rarefied_fully_sampled.csv"),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# Site
+bd_site_full <- betadisper(bray_full, metadata_full$Site)
+anova_site_full <- as.data.frame(anova(bd_site_full))
+bd_site_full_df <- data.frame(
+  Term = rownames(anova_site_full),
+  anova_site_full,
+  row.names = NULL
+)
+write.csv(
+  bd_site_full_df,
+  file = file.path(outdir, "betadisper_site_BRAY_RA_rarefied_fully_sampled.csv"),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# Month
+bd_month_full <- betadisper(bray_full, metadata_full$Month)
+anova_month_full <- as.data.frame(anova(bd_month_full))
+bd_month_full_df <- data.frame(
+  Term = rownames(anova_month_full),
+  anova_month_full,
+  row.names = NULL
+)
+write.csv(
+  bd_month_full_df,
+  file = file.path(outdir, "betadisper_month_BRAY_RA_rarefied_fully_sampled.csv"),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# -----------------------------------------------------------------------------
+# 10. All samples: factorial PERMANOVA without TreeID blocking
+# -----------------------------------------------------------------------------
+bray_all <- vegdist(otu_rel, method = "bray")
+
+adonis_all <- adonis2(
+  bray_all ~ Species * Site * Month,
+  data = metadata,
+  permutations = 999,
+  by = "terms"
+)
+
+adonis_all_df <- as.data.frame(adonis_all)
+adonis_all_df$Term <- rownames(adonis_all_df)
+adonis_all_df <- adonis_all_df[, c("Term", "Df", "SumOfSqs", "R2", "F", "Pr(>F)"), drop = FALSE]
+
+write.csv(
+  adonis_all_df,
+  file = file.path(outdir, "adonis_all_effects_BRAY_RA_rarefied.csv"),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# -----------------------------------------------------------------------------
+# 11. All samples: betadisper tests
+# -----------------------------------------------------------------------------
+# Species
+bd_species_all <- betadisper(bray_all, metadata$Species)
+anova_species_all <- as.data.frame(anova(bd_species_all))
+bd_species_all_df <- data.frame(
+  Term = rownames(anova_species_all),
+  anova_species_all,
+  row.names = NULL
+)
+write.csv(
+  bd_species_all_df,
+  file = file.path(outdir, "betadisper_species_BRAY_RA_rarefied_all_samples.csv"),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# Site
+bd_site_all <- betadisper(bray_all, metadata$Site)
+anova_site_all <- as.data.frame(anova(bd_site_all))
+bd_site_all_df <- data.frame(
+  Term = rownames(anova_site_all),
+  anova_site_all,
+  row.names = NULL
+)
+write.csv(
+  bd_site_all_df,
+  file = file.path(outdir, "betadisper_site_BRAY_RA_rarefied_all_samples.csv"),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# Month
+bd_month_all <- betadisper(bray_all, metadata$Month)
+anova_month_all <- as.data.frame(anova(bd_month_all))
+bd_month_all_df <- data.frame(
+  Term = rownames(anova_month_all),
+  anova_month_all,
+  row.names = NULL
+)
+write.csv(
+  bd_month_all_df,
+  file = file.path(outdir, "betadisper_month_BRAY_RA_rarefied_all_samples.csv"),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# -----------------------------------------------------------------------------
+# 12. Console summaries
+# -----------------------------------------------------------------------------
+cat("\n============================================================\n")
+cat("Rarefied beta diversity analysis complete.\n")
+cat("Outputs written to:\n")
+cat(outdir, "\n")
+cat("============================================================\n\n")
+
+cat("Fully sampled TreeIDs retained:", length(unique(metadata_full$TreeID)), "\n")
+cat("Fully sampled samples retained:", nrow(metadata_full), "\n")
+cat("All retained samples:", nrow(metadata), "\n\n")
+
+cat("----- Fully sampled additive PERMANOVA -----\n")
+print(adonis_full_df)
+
+cat("\n----- Fully sampled interaction PERMANOVA -----\n")
+print(adonis_full_interaction_df)
+
+cat("\n----- All-sample factorial PERMANOVA -----\n")
+print(adonis_all_df)
+
+cat("\n----- Fully sampled betadisper: Species -----\n")
+print(bd_species_full_df)
+
+cat("\n----- Fully sampled betadisper: Site -----\n")
+print(bd_site_full_df)
+
+cat("\n----- Fully sampled betadisper: Month -----\n")
+print(bd_month_full_df)
+
+cat("\n----- All-sample betadisper: Species -----\n")
+print(bd_species_all_df)
+
+cat("\n----- All-sample betadisper: Site -----\n")
+print(bd_site_all_df)
+
+cat("\n----- All-sample betadisper: Month -----\n")
+print(bd_month_all_df)
+```
